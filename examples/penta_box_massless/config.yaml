@@ -1,0 +1,44 @@
+kinematics:
+  loop_momenta: ["k1", "k2"]
+  external_momenta: ["p1", "p2", "p3", "p4", "p5"]
+  conservation:
+    "p5": "-p1-p2-p3-p4"
+  invariants:
+    "p1^2": "0"
+    "p2^2": "0"
+    "p3^2": "0"
+    "p4^2": "0"
+    "p5^2": "0"
+    "(p1+p2)^2": "x1"
+    "(p2+p3)^2": "x2"
+    "(p3+p4)^2": "x3"
+    "(p4+p5)^2": "x4"
+    "(p5+p1)^2": "x5"
+
+propagators:
+  - "k1^2"
+  - "(k1-p1)^2"
+  - "(k1-p1-p2)^2"
+  - "(k1-p1-p2-p3)^2"
+  - "k2^2"
+  - "(k2+p1+p2+p3+p4)^2"
+  - "(k2+p1+p2+p3)^2"
+  - "(k1+k2)^2"
+  - "(k1-p1-p2-p3-p4)^2"
+  - "(k2+p1)^2"
+  - "(k2+p1+p2)^2"
+
+top_sector: [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
+
+integral_header: "F"
+
+symmetry_backend: nauty
+
+threads: 24
+factor_scan: true
+shift_scan: true
+
+numerics:
+  "x5": "5"
+
+targets_file: "targets.txt"

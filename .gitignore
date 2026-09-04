@@ -1,0 +1,32 @@
+.DS_Store
+
+# Build products
+build
+build-**
+.d
+*.slo
+*.lo
+*.o
+*.obj
+*.gch
+*.pch
+*.so
+*.dylib
+*.dll
+*.mod
+*.smod
+*.lai
+*.la
+*.a
+*.lib
+*.exe
+*.out
+*.app
+
+# Runtime artifacts
+*.log
+ff_save
+outputs
+results.json
+results.m
+core.*
