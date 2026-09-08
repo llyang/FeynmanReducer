@@ -51,22 +51,21 @@ struct CompiledTape {
 
 [[nodiscard]] CompiledTape compile_tape(std::span<const Instruction> tape);
 
-template <typename Arithmetic>
-[[nodiscard]] bool execute_matrix_tape_capture(std::vector<std::uint64_t>& matrix,
-                                               const CompiledTape& tape,
-                                               std::vector<std::uint64_t>& factors,
-                                               const Arithmetic& arithmetic)
+template <typename Arithmetic, typename Capture>
+[[nodiscard]] bool execute_matrix_tape_capture_impl(std::vector<std::uint64_t>& matrix,
+                                                    const CompiledTape& tape,
+                                                    const Arithmetic& arithmetic,
+                                                    Capture&& capture)
 {
   if (!tape.rhs_ranges.empty() || tape.logical_rhs_operations != 0)
     throw std::logic_error("matrix factor tape contains RHS operations");
-  if (factors.size() < tape.groups.size()) factors.resize(tape.groups.size());
   std::size_t operation_index = 0;
   for (std::size_t group_index = 0; group_index < tape.groups.size(); ++group_index) {
     const TapeGroup& group = tape.groups[group_index];
     std::uint64_t factor = 0;
     if (group.kind == TapeGroupKind::Scale) {
       if (!arithmetic.inverse(matrix[group.source], factor)) return false;
-      factors[group_index] = factor;
+      capture(group_index, factor);
       const std::size_t end = operation_index + group.matrix_operations;
       while (operation_index != end) {
         const auto operation = tape.operations[operation_index++];
@@ -75,7 +74,7 @@ template <typename Arithmetic>
       }
     } else {
       factor = matrix[group.source];
-      factors[group_index] = factor;
+      capture(group_index, factor);
       const std::size_t end = operation_index + group.matrix_operations;
       while (operation_index != end) {
         const auto operation = tape.operations[operation_index++];
@@ -87,6 +86,18 @@ template <typename Arithmetic>
   if (operation_index != tape.operations.size())
     throw std::logic_error("matrix factor tape does not cover its operands");
   return true;
+}
+
+template <typename Arithmetic>
+[[nodiscard]] bool execute_matrix_tape_capture(std::vector<std::uint64_t>& matrix,
+                                               const CompiledTape& tape,
+                                               std::vector<std::uint64_t>& factors,
+                                               const Arithmetic& arithmetic)
+{
+  if (factors.size() < tape.groups.size()) factors.resize(tape.groups.size());
+  return execute_matrix_tape_capture_impl(
+      matrix, tape, arithmetic,
+      [&](std::size_t group, std::uint64_t factor) { factors[group] = factor; });
 }
 
 // Replays typed groups without per-instruction opcode dispatch. A false result
@@ -194,6 +205,24 @@ struct CompactedMatrixTapeLayout {
 prune_matrix_factor_tape(std::vector<Instruction>& tape,
                          std::uint32_t matrix_slot_count,
                          std::span<const std::uint8_t> required_factor_groups);
+
+// capture_slots is validated once when the immutable master program is published.
+// Uncaptured groups still execute every matrix operation and check their pivots.
+template <typename Arithmetic>
+[[nodiscard]] bool execute_matrix_tape_capture_compact(
+    std::vector<std::uint64_t>& matrix, const CompiledTape& tape,
+    std::vector<std::uint64_t>& factors, const Arithmetic& arithmetic,
+    std::span<const std::uint32_t> capture_slots, std::size_t factor_count)
+{
+  if (capture_slots.size() != tape.groups.size())
+    throw std::logic_error("factor capture map does not match matrix tape");
+  if (factors.size() < factor_count) factors.resize(factor_count);
+  return execute_matrix_tape_capture_impl(
+      matrix, tape, arithmetic, [&](std::size_t group, std::uint64_t factor) {
+        const auto slot = capture_slots[group];
+        if (slot != CompactedTapeLayout::INVALID_SLOT) factors[slot] = factor;
+      });
+}
 
 [[nodiscard]] CompactedTapeLayout
 prune_and_compact_tape(std::vector<Instruction>& tape, std::uint32_t matrix_slot_count,

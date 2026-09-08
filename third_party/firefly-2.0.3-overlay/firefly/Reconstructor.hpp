@@ -18,6 +18,8 @@
 
 #pragma once
 
+#define FEYNMAN_REDUCER_FIREFLY_OVERLAY 1
+
 #include "core/AtomicSharedPtr.hpp"
 #include "firefly/config.hpp"
 #include "firefly/BlackBoxBase.hpp"
@@ -108,6 +110,12 @@ namespace firefly {
      *  @return the vector of reconstructed rational functions
      */
     std::vector<RationalFunction> get_result();
+    // Terminal, single-caller export after successful reconstruction. Joins all
+    // workers before invoking consumer(output_id, value), then releases each
+    // reconstruction. The object cannot reconstruct/export again, even if the
+    // consumer throws. Existing non-consuming exports remain available otherwise.
+    template<typename Consumer>
+    void consume_results(Consumer&& consumer);
     /**
      *  @return the vector of inteprolated rational functions over the last field
      */
@@ -236,7 +244,8 @@ namespace firefly {
     std::vector<FFInt> rand_zi_fac {};
     std::ofstream logger;
     std::vector<uint32_t> max_degs {};
-    ThreadPool tp;
+    std::unique_ptr<ThreadPool> tp = std::make_unique<ThreadPool>();
+    bool results_consumed = false;
     // TODO tidy up the mutexes
     std::mutex future_control;
     // average_black_box_time, computed_probes, iteration
@@ -418,9 +427,9 @@ namespace firefly {
   template<typename BlackBoxTemp>
   Reconstructor<BlackBoxTemp>::Reconstructor(const uint32_t n_, const uint32_t thr_n_, BlackBoxBase<BlackBoxTemp>& bb_,
 #ifndef WITH_MPI
-                               const int verbosity_): n(n_), thr_n(thr_n_), bb(bb_), verbosity(verbosity_), tp(thr_n_) {
+                               const int verbosity_): n(n_), thr_n(thr_n_), bb(bb_), verbosity(verbosity_), tp(std::make_unique<ThreadPool>(thr_n_)) {
 #else
-                               int verbosity_): n(n_), thr_n(thr_n_ - 1), bb(bb_), verbosity(verbosity_), tp(thr_n) {
+                               int verbosity_): n(n_), thr_n(thr_n_ - 1), bb(bb_), verbosity(verbosity_), tp(std::make_unique<ThreadPool>(thr_n)) {
 #endif
     if (n == 0) {
       ERROR_MSG("FireFly does not support functional reconstructions without variables!\n               If you want to continue, set n at least to 1.");
@@ -454,9 +463,9 @@ namespace firefly {
   template<typename BlackBoxTemp>
   Reconstructor<BlackBoxTemp>::Reconstructor(const uint32_t n_, const uint32_t thr_n_, const uint32_t bunch_size_,
 #ifndef WITH_MPI
-                               BlackBoxBase<BlackBoxTemp>& bb_, const int verbosity_): n(n_), thr_n(thr_n_), bunch_size(bunch_size_), bb(bb_), verbosity(verbosity_), tp(thr_n_) {
+                               BlackBoxBase<BlackBoxTemp>& bb_, const int verbosity_): n(n_), thr_n(thr_n_), bunch_size(bunch_size_), bb(bb_), verbosity(verbosity_), tp(std::make_unique<ThreadPool>(thr_n_)) {
 #else
-                               BlackBoxBase<BlackBoxTemp>& bb_, int verbosity_): n(n_), thr_n(thr_n_ - 1), bunch_size(bunch_size_), bb(bb_), verbosity(verbosity_), tp(thr_n) {
+                               BlackBoxBase<BlackBoxTemp>& bb_, int verbosity_): n(n_), thr_n(thr_n_ - 1), bunch_size(bunch_size_), bb(bb_), verbosity(verbosity_), tp(std::make_unique<ThreadPool>(thr_n)) {
 #endif
     if (n == 0) {
       ERROR_MSG("FireFly does not support functional reconstructions without variables!\n               If you want to continue, set n at least to 1.");
@@ -496,7 +505,7 @@ namespace firefly {
   template<typename BlackBoxTemp>
   Reconstructor<BlackBoxTemp>::~Reconstructor() {
     logger.close();
-    tp.kill_all();
+    if (tp) tp->kill_all();
 
     auto it = reconst.begin();
 
@@ -551,6 +560,8 @@ namespace firefly {
 
   template<typename BlackBoxTemp>
   void Reconstructor<BlackBoxTemp>::resume_from_saved_state() {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
     tinydir_dir dir;
     tinydir_open_sorted(&dir, "ff_save/states");
 
@@ -596,6 +607,8 @@ namespace firefly {
 
   template<typename BlackBoxTemp>
   void Reconstructor<BlackBoxTemp>::resume_from_saved_state(const std::vector<std::string>& file_paths_) {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
     if (verbosity > SILENT) {
       INFO_MSG("Loading saved states");
       logger << "Loading saved states\n";
@@ -924,6 +937,8 @@ namespace firefly {
 
   template<typename BlackBoxTemp>
   void Reconstructor<BlackBoxTemp>::reconstruct(uint32_t prime_counter) {
+    if (results_consumed)
+      throw std::logic_error("cannot reconstruct after terminal result consumption");
     start = std::chrono::high_resolution_clock::now();
 
     if (!aborted || resumed)
@@ -1088,7 +1103,7 @@ namespace firefly {
         proceed = false;
       }
 
-      tp.kill_all();
+      tp->kill_all();
 
       new_jobs = false; // to make sure that no new jobs have been started
 
@@ -1166,6 +1181,8 @@ namespace firefly {
 
   template<typename BlackBoxTemp>
   std::vector<RationalFunction> Reconstructor<BlackBoxTemp>::get_result() {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
     std::vector<RationalFunction> result {};
     uint32_t counter = 0;
 
@@ -1191,7 +1208,41 @@ namespace firefly {
   }
 
   template<typename BlackBoxTemp>
+  template<typename Consumer>
+  void Reconstructor<BlackBoxTemp>::consume_results(Consumer&& consumer) {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
+    if (!done || factor_scan || scan)
+      throw std::logic_error("cannot consume an unfinished reconstruction");
+    results_consumed = true;
+    // kill_all only cancels queued work and waits for running tasks. Destroying
+    // the pool is necessary to join its threads and release their replay caches.
+    tp->kill_all();
+    tp.reset();
+    invalidate_active_output_snapshot();
+    auto it = reconst.begin();
+    while (it != reconst.end()) {
+      if (std::get<1>(*it) != DONE) {
+        throw std::logic_error("terminal export encountered an unfinished result");
+      }
+      const auto output = std::get<0>(*it);
+      auto value = std::get<2>(*it)->get_result();
+      if (change_var_order) value.set_var_order(optimal_var_order);
+      const auto factors = factors_rf.find(output);
+      if (factors != factors_rf.end()) {
+        for (const auto& factor : factors->second) value.add_factor(factor);
+      }
+      consumer(output, value);
+      if (factors != factors_rf.end()) factors_rf.erase(factors);
+      delete std::get<2>(*it);
+      it = reconst.erase(it);
+    }
+  }
+
+  template<typename BlackBoxTemp>
   std::vector<RationalFunctionFF> Reconstructor<BlackBoxTemp>::get_result_ff() {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
     std::vector<RationalFunctionFF> result {};
 
     for (auto & rec : reconst) {
@@ -1203,6 +1254,8 @@ namespace firefly {
 
   template<typename BlackBoxTemp>
   std::vector<std::pair<std::string, RationalFunction>> Reconstructor<BlackBoxTemp>::get_early_results() {
+    if (results_consumed)
+      throw std::logic_error("reconstruction results have already been consumed");
     if (factor_scan || scan) {
       return std::vector<std::pair<std::string, RationalFunction>> {};
     }
@@ -2099,7 +2152,7 @@ namespace firefly {
       }
 
       for (uint32_t j = 0; j != to_start; ++j) {
-        tp.run_task([this]() {
+        tp->run_task([this]() {
           get_job();
         });
       }
@@ -2347,7 +2400,7 @@ namespace firefly {
     }
 
     for (uint32_t j = 0; j != to_start; ++j) {
-      tp.run_task([this]() {
+      tp->run_task([this]() {
         get_job();
       });
     }
@@ -2386,7 +2439,7 @@ namespace firefly {
           if (std::get<2>(rec)->get_prime() == 0) {
             ++counter;
 
-            tp.run_priority_task([this, &rec]() {
+            tp->run_priority_task([this, &rec]() {
               interpolate_job(rec);
             });
           }
@@ -2452,7 +2505,7 @@ namespace firefly {
         }
 #endif
 
-        tp.kill_all();
+        tp->kill_all();
 
 #ifdef WITH_MPI
         new_jobs = false; // to make sure that no new jobs have been started
@@ -2748,7 +2801,7 @@ namespace firefly {
           }
 
           for (uint32_t j = 0; j != to_start; ++j) {
-            tp.run_task([this]() {
+            tp->run_task([this]() {
               get_job();
             });
           }
@@ -2773,7 +2826,7 @@ namespace firefly {
         ++feed_jobs;
       }
 
-      tp.run_priority_task([this, probe = std::move(computed_probe)]() {
+      tp->run_priority_task([this, probe = std::move(computed_probe)]() {
         feed_job(probe);
       });
 
@@ -2824,7 +2877,7 @@ namespace firefly {
           }
 
           // make sure that no threads are running anymore
-          while (tp.wait());
+          while (tp->wait());
 
           // no jobs are running anymore, check if done or new_prime else throw error
           if (items_done == items) {
@@ -2900,7 +2953,7 @@ namespace firefly {
     }
 #endif
 
-    tp.kill_all();
+    tp->kill_all();
 
 #ifdef WITH_MPI
     new_jobs = false; // to make sure that no new jobs have been started
@@ -3031,7 +3084,7 @@ namespace firefly {
 #endif
     if (!precomputed_probes) {
       for (uint32_t j = 0; j != to_start; ++j) {
-        tp.run_task([this]() {
+        tp->run_task([this]() {
           get_job();
         });
       }
@@ -3151,13 +3204,13 @@ namespace firefly {
             if (interpolate_and_write.first) {
               ++counter;
 
-              tp.run_priority_task([this, &rec]() {
+              tp->run_priority_task([this, &rec]() {
                 interpolate_job(rec);
               });
             }
 
             if (interpolate_and_write.second) {
-              tp.run_priority_task([&rec]() {
+              tp->run_priority_task([&rec]() {
                 std::get<2>(rec)->write_food_to_file();
               });
             }

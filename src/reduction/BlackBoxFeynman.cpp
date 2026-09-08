@@ -3,6 +3,7 @@
 #include "masters/detail/GlobalBasisSelector.hpp"
 #include "reduction/EliminationTape.hpp"
 #include "reduction/FiniteFieldArithmetic.hpp"
+#include "reduction/MasterIndependence.hpp"
 #include "reduction/ParameterEvaluation.hpp"
 #include "topology/IntegralLayout.hpp"
 
@@ -154,7 +155,9 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options)
       ansatz_dot_ordering(options.ansatz_dot_ordering),
       direct_pinched_dot_halo(options.direct_pinched_dot_halo),
       direct_group_ordering(options.direct_group_ordering),
-      direct_rank_ordering(options.direct_rank_ordering)
+      direct_rank_ordering(options.direct_rank_ordering),
+      check_master_independence(config.check_master_independence &&
+                                !options.master_basis_globally_selected)
 {
   for (const auto& master : cfg.basis) {
     if (std::ranges::any_of(master.indices, [](int index) { return index < 0; })) {
@@ -301,6 +304,10 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options)
 void BlackBoxFeynman::publish_compact_statistics(
     const reduction::detail::CompactSelection& selection)
 {
+  kernel_statistics_.master_rank_completion_seconds =
+      selection.timings.master_rank_completion_ms / 1000.0;
+  kernel_statistics_.master_rank_check_seconds =
+      selection.timings.master_rank_check_ms / 1000.0;
   kernel_statistics_.provisional_dimension = selection.provisional_dimension;
   kernel_statistics_.provisional_rhs_columns = selection.provisional_rhs_columns;
   kernel_statistics_.provisional_relation_pivots =
@@ -315,6 +322,12 @@ void BlackBoxFeynman::publish_compact_statistics(
       selection.provisional_parallel_refresh_columns;
   kernel_statistics_.provisional_stale_choice_pops =
       selection.provisional_stale_choice_pops;
+  kernel_statistics_.provisional_choice_queue_compactions =
+      selection.provisional_choice_queue_compactions;
+  kernel_statistics_.provisional_compacted_choice_entries =
+      selection.provisional_compacted_choice_entries;
+  kernel_statistics_.provisional_maximum_choice_queue_size =
+      selection.provisional_maximum_choice_queue_size;
   kernel_statistics_.provisional_row_eliminations =
       selection.provisional_row_eliminations;
   kernel_statistics_.provisional_parallel_row_batches =
@@ -395,6 +408,7 @@ BlackBoxFeynman::prepare(Config& config, const masters::MasterCandidateSet& cand
     throw std::invalid_argument(
         "master preselection requires a global-selection candidate set");
   }
+  options.master_basis_globally_selected = true;
   const bool direct = uses_direct_kernel(config, options);
   const auto original_basis = config.basis;
   const auto selection_start = std::chrono::high_resolution_clock::now();
@@ -478,6 +492,8 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
       const auto coeffs = candidate->evaluate_coefficients(values);
       candidate->plan_kernel(coeffs, values, progress, relation_source_sectors);
       std::vector<std::vector<Monomial>>().swap(candidate->top_lp_target_plan.columns);
+    } catch (const reduction::detail::MasterBasisDependenceError&) {
+      throw;
     } catch (const AnsatzClosureError&) {
       throw;
     } catch (const std::logic_error&) {

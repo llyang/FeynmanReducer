@@ -114,6 +114,8 @@ struct KernelPublicationInput {
 };
 
 struct CompactPhaseTimings {
+  double master_rank_completion_ms = 0.0;
+  double master_rank_check_ms = 0.0;
   double provisional_build_ms = 0.0;
   double provisional_elimination_ms = 0.0;
   double provisional_relation_elimination_ms = 0.0;
@@ -142,6 +144,9 @@ struct CompactSelection {
   std::size_t provisional_parallel_refresh_batches = 0;
   std::size_t provisional_parallel_refresh_columns = 0;
   std::size_t provisional_stale_choice_pops = 0;
+  std::size_t provisional_choice_queue_compactions = 0;
+  std::size_t provisional_compacted_choice_entries = 0;
+  std::size_t provisional_maximum_choice_queue_size = 0;
   std::size_t provisional_row_eliminations = 0;
   std::size_t provisional_parallel_row_batches = 0;
   std::size_t provisional_parallel_row_eliminations = 0;
@@ -159,7 +164,7 @@ struct CompactSelection {
     const firefly::FFInt& minus_half_d, std::span<const std::uint32_t> row_groups = {},
     std::span<const std::uint32_t> ordered_groups = {},
     AnsatzDotOrdering dot_ordering = AnsatzDotOrdering::Markowitz,
-    std::size_t planning_threads = 1);
+    std::size_t planning_threads = 1, bool check_master_independence = false);
 
 template <typename Emit>
 void for_each_bilinear_weight(const IndexedTerm& term,

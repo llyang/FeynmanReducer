@@ -9,6 +9,10 @@
 
 #include <firefly/Reconstructor.hpp>
 
+#ifndef FEYNMAN_REDUCER_FIREFLY_OVERLAY
+#error "FeynmanReducer requires the repository FireFly Reconstructor overlay"
+#endif
+
 #include <format>
 #include <functional>
 #include <memory>
@@ -117,23 +121,6 @@ ReductionResult reconstruct_prepared(Config& config,
 
   return run_reduction_stage(progress, "Materialize reduction result", [&] {
     const auto reconstructed_outputs = black_box->reconstructed_outputs();
-    std::vector<FlintRational> reconstructed;
-    if (config.parameters.empty()) {
-      reconstructed = std::move(constant_results);
-    } else if (reconstructor != nullptr) {
-      const auto firefly_result = reconstructor->get_result();
-      reconstructed.reserve(firefly_result.size());
-      for (const auto& value : firefly_result) {
-        reconstructed.push_back(
-            reduction_detail::import_firefly_rational(value, context));
-      }
-    }
-    if (reconstructed.size() != reconstructed_outputs.size()) {
-      throw std::runtime_error(
-          std::format("reconstruction result shape mismatch: expected {}, got {}",
-                      reconstructed_outputs.size(), reconstructed.size()));
-    }
-
     const std::size_t full_output_count = black_box->total_output_count();
     ReductionResult result{config.integral_header,
                            config.parameters,
@@ -145,11 +132,28 @@ ReductionResult reconstruct_prepared(Config& config,
     result.coefficients.reserve(full_output_count);
     for (std::size_t output = 0; output < full_output_count; ++output)
       result.coefficients.emplace_back(context);
-    for (std::size_t output = 0; output < reconstructed.size(); ++output) {
+    std::size_t received = 0;
+    const auto store = [&](std::size_t output, FlintRational value) {
+      if (output != received || output >= reconstructed_outputs.size())
+        throw std::logic_error("reconstructed output order or count is invalid");
       const std::size_t full_position = reconstructed_outputs[output];
       if (full_position >= result.coefficients.size())
         throw std::logic_error("reconstructed output position is out of range");
-      result.coefficients[full_position] = std::move(reconstructed[output]);
+      result.coefficients[full_position] = std::move(value);
+      ++received;
+    };
+    if (config.parameters.empty()) {
+      for (std::size_t output = 0; output < constant_results.size(); ++output)
+        store(output, std::move(constant_results[output]));
+    } else if (reconstructor != nullptr) {
+      reconstructor->consume_results([&](std::uint64_t output, const auto& value) {
+        store(output, reduction_detail::import_firefly_rational(value, context));
+      });
+    }
+    if (received != reconstructed_outputs.size()) {
+      throw std::runtime_error(
+          std::format("reconstruction result shape mismatch: expected {}, got {}",
+                      reconstructed_outputs.size(), received));
     }
     return result;
   });
@@ -170,6 +174,7 @@ ReductionResult perform_reduction_impl(Config& config,
       config.basis = masters::detail::select_global_master_basis(
           config, candidates->integrals, candidates->relation_source_sectors);
       relation_source_sectors = candidates->relation_source_sectors;
+      options.master_basis_globally_selected = true;
     }
     if (config.basis.empty())
       throw std::runtime_error(

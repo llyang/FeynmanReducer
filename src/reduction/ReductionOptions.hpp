@@ -49,4 +49,6 @@ struct ReductionOptions {
   unsigned direct_pinched_dot_halo = 1;
   DirectGroupOrdering direct_group_ordering = DirectGroupOrdering::Auto;
   DirectRankOrdering direct_rank_ordering = DirectRankOrdering::LowFirst;
+  // Internal provenance: global selection already checked master independence.
+  bool master_basis_globally_selected = false;
 };

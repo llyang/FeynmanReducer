@@ -726,20 +726,36 @@ void BlackBoxFeynman::finalize_replay(const ReductionProgressCallback& progress)
         master.couplings.push_back({coupling.target_begin, coupling.target_end});
       }
       program.compiled_tape = linalg::compile_tape(program.tape);
+      master.factor_capture_slots.assign(program.compiled_tape.groups.size(),
+                                         linalg::CompactedTapeLayout::INVALID_SLOT);
+      for (const auto& operation : master.operations) {
+        if (operation.factor_group >= master.factor_capture_slots.size())
+          throw std::logic_error("master operation refers to an absent matrix factor");
+        master.factor_capture_slots[operation.factor_group] = 0;
+      }
+      for (auto& slot : master.factor_capture_slots) {
+        if (slot == linalg::CompactedTapeLayout::INVALID_SLOT) continue;
+        if (master.factor_count == linalg::CompactedTapeLayout::INVALID_SLOT)
+          throw std::overflow_error("master factor slots exceed compact encoding");
+        slot = master.factor_count++;
+      }
+      for (auto& operation : master.operations)
+        operation.factor_group = master.factor_capture_slots[operation.factor_group];
       for (const auto instruction : program.tape)
         ++opcode_counts[static_cast<std::size_t>(instruction.opcode())];
       program.matrix_workspace_size = matrix_layout.matrix_size;
       maximum_matrix_workspace =
           std::max(maximum_matrix_workspace,
                    static_cast<std::size_t>(program.matrix_workspace_size));
-      maximum_factor_workspace =
-          std::max(maximum_factor_workspace, program.compiled_tape.groups.size());
+      maximum_factor_workspace = std::max(
+          maximum_factor_workspace, static_cast<std::size_t>(master.factor_count));
       tape_instructions += program.tape.size();
       matrix_operations += program.compiled_tape.operations.size();
       factor_groups += program.compiled_tape.groups.size();
       compiled_bytes +=
           program.compiled_tape.groups.size() * sizeof(linalg::TapeGroup) +
           program.compiled_tape.operations.size() * sizeof(linalg::TapeOperation) +
+          master.factor_capture_slots.size() * sizeof(std::uint32_t) +
           master.operations.size() * sizeof(CompiledMasterOperation) +
           master.slot_ranges.size() * sizeof(MasterSlotRange);
       std::vector<PendingMasterOperation>().swap(master.pending_operations);

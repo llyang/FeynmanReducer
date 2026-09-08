@@ -106,6 +106,7 @@ struct Config : MasterFinderConfig {
   std::vector<Integral> basis;
   std::vector<Integral> targets;
   BasisSelectionPolicy basis_selection = BasisSelectionPolicy::Default;
+  bool check_master_independence = false;
   bool factor_scan = false;
   bool shift_scan = false;
 };

@@ -237,8 +237,6 @@ EquationGenerator::nabla_k_generator(unsigned k, const std::vector<int>& powers)
     const auto& B = polynomial_terms[i].powers;
     const int Bk = static_cast<int>(B[k - 1]);
     if (Bk > 0) {
-      auto derivative_powers = B;
-      --derivative_powers[k - 1];
       std::vector<int> new_powers = powers;
       new_powers[0] -= 1;
       std::transform(B.begin(), B.end(), new_powers.begin() + 1, new_powers.begin() + 1,

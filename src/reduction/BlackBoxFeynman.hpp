@@ -61,12 +61,17 @@ struct ReductionKernelStatistics {
   std::vector<std::size_t> provisional_ansatz_dot_histogram;
   std::size_t provisional_dimension = 0;
   std::size_t provisional_rhs_columns = 0;
+  double master_rank_completion_seconds = 0.0;
+  double master_rank_check_seconds = 0.0;
   std::size_t provisional_relation_pivots = 0;
   std::size_t provisional_score_refresh_columns = 0;
   std::size_t provisional_incidence_records_scanned = 0;
   std::size_t provisional_parallel_refresh_batches = 0;
   std::size_t provisional_parallel_refresh_columns = 0;
   std::size_t provisional_stale_choice_pops = 0;
+  std::size_t provisional_choice_queue_compactions = 0;
+  std::size_t provisional_compacted_choice_entries = 0;
+  std::size_t provisional_maximum_choice_queue_size = 0;
   std::size_t provisional_row_eliminations = 0;
   std::size_t provisional_parallel_row_batches = 0;
   std::size_t provisional_parallel_row_eliminations = 0;
@@ -309,6 +314,8 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   };
 
   struct MasterReplayProgram {
+    std::vector<std::uint32_t> factor_capture_slots;
+    std::uint32_t factor_count = 0;
     std::vector<PendingMasterOperation> pending_operations;
     std::vector<CompiledMasterOperation> operations;
     std::vector<CompiledMasterCoupling> couplings;
@@ -383,6 +390,7 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   unsigned direct_pinched_dot_halo = 1;
   DirectGroupOrdering direct_group_ordering = DirectGroupOrdering::Auto;
   DirectRankOrdering direct_rank_ordering = DirectRankOrdering::LowFirst;
+  bool check_master_independence = false;
   TopLpTargetPlan top_lp_target_plan;
 
   struct ReplayOutput {

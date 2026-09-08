@@ -433,7 +433,14 @@ void BlackBoxFeynman::plan_direct_numerator_kernel(
     system.selection = reduction::detail::plan_compact_kernel(
         system.basis, planning_targets, system.ansatz, system.metadata,
         system.row_sectors, polynomial_values, {}, coeffs.minus_half_d,
-        system.row_groups, system.ordered_groups, dot_ordering, cfg.threads);
+        system.row_groups, system.ordered_groups, dot_ordering, cfg.threads,
+        check_master_independence);
+    if (check_master_independence && progress)
+      progress(std::format(
+                   "Master independence check: completion_ms={:.2f}, check_ms={:.2f}",
+                   system.selection.timings.master_rank_completion_ms,
+                   system.selection.timings.master_rank_check_ms),
+               ReductionProgressEvent::info);
     return system;
   };
 

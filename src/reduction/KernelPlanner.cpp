@@ -486,7 +486,14 @@ void BlackBoxFeynman::plan_kernel_impl(
     auto selection = reduction::detail::plan_compact_kernel(
         indexed_basis_cols, indexed_target_cols, indexed_ansatz_cols, ansatz_metadata,
         row_sectors, polynomial_values, coeffs.top_lp_coefficients, coeffs.minus_half_d,
-        row_groups, ordered_groups, effective_dot_ordering, cfg.threads);
+        row_groups, ordered_groups, effective_dot_ordering, cfg.threads,
+        check_master_independence);
+    if (check_master_independence && progress)
+      progress(std::format(
+                   "Master independence check: completion_ms={:.2f}, check_ms={:.2f}",
+                   selection.timings.master_rank_completion_ms,
+                   selection.timings.master_rank_check_ms),
+               ReductionProgressEvent::info);
     if (!selection.closed) {
       if (progress) {
         progress(std::format("Kernel elimination: expansion_round={}, rows={}, "

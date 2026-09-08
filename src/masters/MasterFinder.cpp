@@ -3,6 +3,7 @@
 #include "core/ParallelForExecutor.hpp"
 #include "core/ProbeValues.hpp"
 #include "masters/detail/GlobalBasisSelector.hpp"
+#include "masters/detail/IsolatedSymmetryBasis.hpp"
 #include "masters/detail/MasterIntegralOrdering.hpp"
 #include "masters/detail/MonomialPreference.hpp"
 #include "masters/detail/NonisolatedSingular.hpp"
@@ -157,6 +158,58 @@ std::string ring_variables(const TopologyConfig& topology,
     output << 'x' << global_variable(topology, variable) + 1;
   }
   output << ')';
+  return output.str();
+}
+
+const SectorSymmetryClass* sector_symmetry(const TopologyConfig& topology,
+                                           std::uint32_t sector)
+{
+  if (!topology.symmetry || topology.symmetry->backend == SymmetryBackend::None)
+    return nullptr;
+  for (const auto& symmetry_class : topology.symmetry->sector_classes) {
+    if (symmetry_class.representative == sector && !symmetry_class.generators.empty())
+      return &symmetry_class;
+  }
+  return nullptr;
+}
+
+std::string symmetry_basis_script(const TopologyConfig& topology, std::uint32_t sector,
+                                  std::span<const std::uint32_t> active,
+                                  std::size_t probe)
+{
+  const auto* symmetry_class = sector_symmetry(topology, sector);
+  if (symmetry_class == nullptr) return {};
+  std::ostringstream output;
+  output << "if (dX" << probe << " > 0)\n{\nif (fr_error" << probe << " == 0)\n{\n"
+         << "ideal fr_symmetry_relations; int fr_symmetry_i;\n";
+  for (std::size_t index = 0; index < symmetry_class->generators.size(); ++index) {
+    const auto& permutation = symmetry_class->generators[index];
+    output << "map fr_action" << index << "=fr_master_basis_" << probe;
+    for (const auto variable : active) {
+      if (variable >= permutation.size() ||
+          std::ranges::find(active, permutation[variable]) == active.end())
+        throw std::logic_error("sector symmetry does not preserve active variables");
+      output << ",x" << global_variable(topology, permutation[variable]) + 1;
+    }
+    output << ";\nideal fr_image" << index << "=fr_action" << index << "(KB);\n"
+           << "for (fr_symmetry_i=1; fr_symmetry_i<=size(KB); fr_symmetry_i++)\n"
+           << "{ fr_symmetry_relations[size(fr_symmetry_relations)+1]="
+           << "KB[fr_symmetry_i]-fr_image" << index << "[fr_symmetry_i]; }\n";
+  }
+  output << "list fr_symmetry_result=fr_select_symmetry_basis(fr_selected_basis"
+         << probe << ",fr_symmetry_relations,KB,GX);\n"
+         << "ideal fr_symmetry_basis=fr_symmetry_result[1];\n"
+         << "print(\"" << marker(probe, "SYMMETRY_STATUS_BEGIN") << "\");\n"
+         << "print(fr_symmetry_result[2]);\n"
+         << "print(\"" << marker(probe, "SYMMETRY_STATUS_END") << "\");\n"
+         << "print(\"" << marker(probe, "SYMMETRY_DIM_BEGIN") << "\");\n"
+         << "print(size(fr_symmetry_basis));\n"
+         << "print(\"" << marker(probe, "SYMMETRY_DIM_END") << "\");\n"
+         << "print(\"" << marker(probe, "SYMMETRY_KBASE_BEGIN") << "\");\n"
+         << "for (fr_symmetry_i=1; fr_symmetry_i<=size(fr_symmetry_basis); "
+            "fr_symmetry_i++)\n"
+         << "{ print(string(leadexp(fr_symmetry_basis[fr_symmetry_i]))); }\n"
+         << "print(\"" << marker(probe, "SYMMETRY_KBASE_END") << "\");\n}\n}\n";
   return output.str();
 }
 
@@ -336,7 +389,8 @@ std::string probe_script(const TopologyConfig& topology, std::uint32_t sector,
          << "]))); }\n"
          << "  }\n"
          << "  print(\"" << marker(probe, "KBASE_END") << "\");\n"
-         << "}\n";
+         << "}\n"
+         << symmetry_basis_script(topology, sector, active, probe);
   return output.str();
 }
 
@@ -430,15 +484,17 @@ struct ProbeResult {
   int dimension = 0;
   bool nonisolated = false;
   std::vector<std::vector<int>> monomials;
+  std::optional<std::vector<std::vector<int>>> symmetry_monomials;
 };
 
 std::vector<std::vector<int>> parse_monomials(const std::string& output,
                                               std::size_t probe,
-                                              std::size_t variable_count)
+                                              std::size_t variable_count,
+                                              const std::string& label = "KBASE")
 {
   std::vector<std::vector<int>> monomials;
-  for (const auto& line : lines_between(output, marker(probe, "KBASE_BEGIN"),
-                                        marker(probe, "KBASE_END"))) {
+  for (const auto& line : lines_between(output, marker(probe, label + "_BEGIN"),
+                                        marker(probe, label + "_END"))) {
     const std::string value = trim(line);
     if (!value.empty() && !value.starts_with("//")) {
       if (value == "preferred monomial selection failed") {
@@ -454,7 +510,7 @@ std::vector<std::vector<int>> parse_monomials(const std::string& output,
 }
 
 ProbeResult parse_probe_result(const std::string& output, std::size_t probe,
-                               std::size_t variable_count)
+                               std::size_t variable_count, bool has_symmetry)
 {
   const int full_dimension = parse_dimension(output, probe, "DIM_FULL");
   const int basis_dimension = parse_dimension(output, probe, "DIM_BASIS");
@@ -494,7 +550,7 @@ ProbeResult parse_probe_result(const std::string& output, std::size_t probe,
           "count {}",
           monomials.size(), count));
     }
-    return {count, true, std::move(monomials)};
+    return {count, true, std::move(monomials), std::nullopt};
   }
   if (full_dimension == 0) {
     return {};
@@ -505,13 +561,32 @@ ProbeResult parse_probe_result(const std::string& output, std::size_t probe,
         std::format("selected monomial basis size {} does not match vdim {}",
                     monomials.size(), full_dimension));
   }
-  return {full_dimension, false, std::move(monomials)};
+  std::optional<std::vector<std::vector<int>>> symmetry_monomials;
+  if (has_symmetry) {
+    if (parse_dimension(output, probe, "SYMMETRY_STATUS") != 0)
+      throw std::runtime_error("symmetry quotient basis selection failed");
+    const int dimension = parse_dimension(output, probe, "SYMMETRY_DIM");
+    symmetry_monomials =
+        parse_monomials(output, probe, variable_count, "SYMMETRY_KBASE");
+    if (dimension < 0 || dimension > full_dimension ||
+        symmetry_monomials->size() != static_cast<std::size_t>(dimension))
+      throw std::runtime_error("symmetry quotient basis dimension is inconsistent");
+    for (const auto& monomial : *symmetry_monomials) {
+      if (std::ranges::find(monomials, monomial) == monomials.end())
+        throw std::runtime_error("symmetry quotient selected an unknown candidate");
+    }
+    if (std::adjacent_find(symmetry_monomials->begin(), symmetry_monomials->end()) !=
+        symmetry_monomials->end())
+      throw std::runtime_error("symmetry quotient selected duplicate candidates");
+  }
+  return {full_dimension, false, std::move(monomials), std::move(symmetry_monomials)};
 }
 
 struct SectorBasis {
   std::uint32_t sector = 0;
   bool nonisolated = false;
   std::vector<std::vector<int>> monomials;
+  std::optional<std::vector<std::vector<int>>> symmetry_monomials;
 };
 
 SectorBasis calculate_sector_basis(const MasterFinderConfig& config,
@@ -519,7 +594,7 @@ SectorBasis calculate_sector_basis(const MasterFinderConfig& config,
 {
   const auto active =
       integral_layout::active_variables(sector, config.propagator_count);
-  std::string script;
+  std::string script(masters::detail::kIsolatedSymmetryBasisProcedure);
   for (std::size_t probe = 0; probe < kProbeCharacteristics.size(); ++probe) {
     script += probe_script(config, sector, active, probe);
     script += '\n';
@@ -536,7 +611,8 @@ SectorBasis calculate_sector_basis(const MasterFinderConfig& config,
   std::array<ProbeResult, 2> probes;
   for (std::size_t probe = 0; probe < probes.size(); ++probe) {
     try {
-      probes[probe] = parse_probe_result(completed.stdout_text, probe, active.size());
+      probes[probe] = parse_probe_result(completed.stdout_text, probe, active.size(),
+                                         sector_symmetry(config, sector) != nullptr);
     } catch (const std::exception& error) {
       throw std::runtime_error(std::format(
           "failed to parse Singular probe {} in sector {}: {}; stderr: {}", probe + 1,
@@ -545,11 +621,13 @@ SectorBasis calculate_sector_basis(const MasterFinderConfig& config,
   }
   if (probes[0].dimension != probes[1].dimension ||
       probes[0].nonisolated != probes[1].nonisolated ||
-      probes[0].monomials != probes[1].monomials) {
+      probes[0].monomials != probes[1].monomials ||
+      probes[0].symmetry_monomials != probes[1].symmetry_monomials) {
     throw std::runtime_error(std::format("finite-field probes disagree in sector {}",
                                          sector_notation(sector, config)));
   }
-  return {sector, probes[0].nonisolated, std::move(probes[0].monomials)};
+  return {sector, probes[0].nonisolated, std::move(probes[0].monomials),
+          std::move(probes[0].symmetry_monomials)};
 }
 
 std::vector<std::uint32_t> representative_sectors(const MasterFinderConfig& config)
@@ -617,10 +695,6 @@ MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
 
   const auto sectors = representative_sectors(config);
   auto sector_bases = calculate_all_sector_bases(config, sectors);
-  std::unordered_map<std::uint32_t, const SectorSymmetryClass*> classes;
-  for (const auto& sector_class : config.symmetry->sector_classes) {
-    classes.emplace(sector_class.representative, &sector_class);
-  }
 
   MasterCandidateSet result;
   const bool needs_global_selection =
@@ -653,23 +727,15 @@ MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
           std::unique(sector_basis.monomials.begin(), sector_basis.monomials.end()),
           sector_basis.monomials.end());
     }
-    std::vector<std::size_t> kept_indices(sector_basis.monomials.size());
-    std::iota(kept_indices.begin(), kept_indices.end(), 0);
-    const auto sector_class = classes.find(sector_basis.sector);
-    if (!needs_global_selection && sector_class != classes.end() &&
-        !sector_class->second->generators.empty() && !sector_basis.monomials.empty()) {
-      kept_indices = symmetry::find_sector_monomial_orbit_representatives(
-          config, sector_basis.sector, sector_basis.monomials,
-          config.symmetry->backend);
-    }
+    if (!needs_global_selection && sector_basis.symmetry_monomials)
+      sector_basis.monomials = std::move(*sector_basis.symmetry_monomials);
     const auto active =
         integral_layout::active_variables(sector_basis.sector, config.propagator_count);
-    for (const auto index : kept_indices) {
+    for (const auto& monomial : sector_basis.monomials) {
       Integral active_integral;
       active_integral.indices.assign(config.propagator_count, 0);
       for (std::size_t variable = 0; variable < active.size(); ++variable) {
-        active_integral.indices[active[variable]] =
-            1 + sector_basis.monomials[index][variable];
+        active_integral.indices[active[variable]] = 1 + monomial[variable];
       }
       auto integral = integral_layout::expand_active(config, active_integral);
       result.integrals.push_back(std::move(integral));

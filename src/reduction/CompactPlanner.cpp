@@ -2,6 +2,7 @@
 
 #include "reduction/EliminationTape.hpp"
 #include "reduction/FiniteFieldArithmetic.hpp"
+#include "reduction/MasterIndependence.hpp"
 #include "reduction/SparseMarkowitz.hpp"
 
 #include <algorithm>
@@ -107,6 +108,10 @@ void assign_markowitz_statistics(CompactSelection& selection,
   selection.provisional_parallel_refresh_batches = statistics.parallel_refresh_batches;
   selection.provisional_parallel_refresh_columns = statistics.parallel_refresh_columns;
   selection.provisional_stale_choice_pops = statistics.stale_choice_pops;
+  selection.provisional_choice_queue_compactions = statistics.choice_queue_compactions;
+  selection.provisional_compacted_choice_entries = statistics.compacted_choice_entries;
+  selection.provisional_maximum_choice_queue_size =
+      statistics.maximum_choice_queue_size;
   selection.provisional_row_eliminations = statistics.row_eliminations;
   selection.provisional_parallel_row_batches = statistics.parallel_row_batches;
   selection.provisional_parallel_row_eliminations =
@@ -171,7 +176,7 @@ CompactSelection plan_compact_kernel_impl(
     const firefly::FFInt& minus_half_d, bool project_target_support,
     std::span<const std::uint32_t> explicit_row_groups,
     std::span<const std::uint32_t> ordered_groups, AnsatzDotOrdering dot_ordering,
-    std::size_t planning_threads)
+    std::size_t planning_threads, bool check_master_independence)
 {
   using T = NativeFieldElement;
   using Clock = std::chrono::high_resolution_clock;
@@ -270,70 +275,85 @@ CompactSelection plan_compact_kernel_impl(
   };
   CompactSelection selection;
   selection.provisional_rhs_columns = project_target_support ? 2 : num_targets;
-  std::vector<std::size_t> provisional_order(ansatz_columns.size());
-  std::iota(provisional_order.begin(), provisional_order.end(), 0);
-  const std::size_t generated_column_count = num_basis_cols + provisional_order.size();
-  const auto start = Clock::now();
-  auto provisional_system =
-      build_probe_system(provisional_order, project_target_support);
-  const auto provisional_groups = column_sector_groups(provisional_order);
-  const auto provisional_priorities = column_priorities(provisional_order);
-  const auto provisional_complexities = column_complexities(provisional_order);
-  const auto provisional_built = Clock::now();
-  linalg::SparseMarkowitzStatistics markowitz_statistics;
-  // A broad target batch already requests a wide support, so a wider score
-  // refresh batch substantially reduces planning work on large systems without
-  // the sparse-support instability seen for narrow projected target sets. Keep
-  // smaller systems on the tighter policy because their refresh cost is modest.
-  const std::size_t score_refresh_interval = linalg::compact_score_refresh_interval(
-      target_columns.size(), generated_column_count);
-  auto provisional_result = linalg::sparse_markowitz_elimination(
-      provisional_system.matrix, generated_column_count, provisional_system.rhs,
-      provisional_system.rhs_columns, num_basis_cols, row_groups, provisional_groups,
-      provisional_priorities, ordered_groups, provisional_complexities,
-      complexity_order(dot_ordering), &markowitz_statistics, planning_threads,
-      score_refresh_interval);
-  const auto provisional_eliminated = Clock::now();
-  selection.timings.provisional_build_ms = milliseconds(start, provisional_built);
-  selection.timings.provisional_elimination_ms =
-      milliseconds(provisional_built, provisional_eliminated);
-  assign_markowitz_statistics(selection, markowitz_statistics);
-  if (!provisional_result.closed) {
-    auto residual = collect_residual_rows(provisional_result,
-                                          std::span<const T>(provisional_system.rhs),
-                                          provisional_system.rhs_columns);
-    selection.residual_rows = std::move(residual.rows);
-    selection.residual_rhs_support = std::move(residual.rhs_columns);
-    selection.timings.total_ms = milliseconds(start, provisional_eliminated);
-    return selection;
-  }
-  if (!basis_is_full_rank(provisional_result.solution_cols))
-    throw std::runtime_error("master basis is not full rank");
+  Clock::time_point start;
+  Clock::time_point provisional_eliminated;
+  // Only the selected support and statistics cross into the final assembly.
+  // Release the larger provisional echelon before allocating that system.
+  {
+    std::vector<std::size_t> provisional_order(ansatz_columns.size());
+    std::iota(provisional_order.begin(), provisional_order.end(), 0);
+    const std::size_t generated_column_count =
+        num_basis_cols + provisional_order.size();
+    start = Clock::now();
+    auto provisional_system =
+        build_probe_system(provisional_order, project_target_support);
+    const auto provisional_groups = column_sector_groups(provisional_order);
+    const auto provisional_priorities = column_priorities(provisional_order);
+    const auto provisional_complexities = column_complexities(provisional_order);
+    const auto provisional_built = Clock::now();
+    linalg::SparseMarkowitzStatistics markowitz_statistics;
+    // A broad target batch already requests a wide support, so a wider score
+    // refresh batch substantially reduces planning work on large systems without
+    // the sparse-support instability seen for narrow projected target sets. Keep
+    // smaller systems on the tighter policy because their refresh cost is modest.
+    const std::size_t score_refresh_interval = linalg::compact_score_refresh_interval(
+        target_columns.size(), generated_column_count);
+    auto provisional_result = linalg::sparse_markowitz_elimination(
+        provisional_system.matrix, generated_column_count, provisional_system.rhs,
+        provisional_system.rhs_columns, num_basis_cols, row_groups, provisional_groups,
+        provisional_priorities, ordered_groups, provisional_complexities,
+        complexity_order(dot_ordering), &markowitz_statistics, planning_threads,
+        score_refresh_interval);
+    if (check_master_independence) {
+      const auto audit =
+          audit_master_independence(provisional_system.matrix, provisional_result,
+                                    generated_column_count, num_basis_cols);
+      selection.timings.master_rank_completion_ms = audit.completion_ms;
+      selection.timings.master_rank_check_ms = audit.check_ms;
+    }
+    provisional_eliminated = Clock::now();
+    selection.timings.provisional_build_ms = milliseconds(start, provisional_built);
+    selection.timings.provisional_elimination_ms =
+        milliseconds(provisional_built, provisional_eliminated);
+    assign_markowitz_statistics(selection, markowitz_statistics);
+    if (!provisional_result.closed) {
+      auto residual = collect_residual_rows(provisional_result,
+                                            std::span<const T>(provisional_system.rhs),
+                                            provisional_system.rhs_columns);
+      selection.residual_rows = std::move(residual.rows);
+      selection.residual_rhs_support = std::move(residual.rhs_columns);
+      selection.timings.total_ms = milliseconds(start, provisional_eliminated);
+      return selection;
+    }
+    if (!basis_is_full_rank(provisional_result.solution_cols))
+      throw std::runtime_error("master basis is not full rank");
 
-  auto provisional_solution = linalg::back_substitute_sparse_echelon(
-      provisional_system.matrix, provisional_system.rhs, provisional_system.rhs_columns,
-      provisional_result.solution_cols, provisional_result.row_map);
-  selection.provisional_dimension = provisional_result.solution_cols.size();
-  selection.ansatz_order.reserve(provisional_result.solution_cols.size() -
-                                 num_basis_cols);
-  for (std::size_t position = num_basis_cols;
-       position < provisional_result.solution_cols.size(); ++position) {
-    bool live = false;
-    for (std::size_t rhs = 0; rhs < provisional_system.rhs_columns; ++rhs) {
-      if (provisional_solution[position * provisional_system.rhs_columns + rhs] !=
-          T(0)) {
-        live = true;
-        break;
+    auto provisional_solution = linalg::back_substitute_sparse_echelon(
+        provisional_system.matrix, provisional_system.rhs,
+        provisional_system.rhs_columns, provisional_result.solution_cols,
+        provisional_result.row_map);
+    selection.provisional_dimension = provisional_result.solution_cols.size();
+    selection.ansatz_order.reserve(provisional_result.solution_cols.size() -
+                                   num_basis_cols);
+    for (std::size_t position = num_basis_cols;
+         position < provisional_result.solution_cols.size(); ++position) {
+      bool live = false;
+      for (std::size_t rhs = 0; rhs < provisional_system.rhs_columns; ++rhs) {
+        if (provisional_solution[position * provisional_system.rhs_columns + rhs] !=
+            T(0)) {
+          live = true;
+          break;
+        }
       }
+      if (!live) continue;
+      const std::size_t provisional_column = provisional_result.solution_cols[position];
+      if (provisional_column < num_basis_cols ||
+          provisional_column - num_basis_cols >= provisional_order.size()) {
+        throw std::logic_error("live ansatz column is out of range");
+      }
+      selection.ansatz_order.push_back(
+          provisional_order[provisional_column - num_basis_cols]);
     }
-    if (!live) continue;
-    const std::size_t provisional_column = provisional_result.solution_cols[position];
-    if (provisional_column < num_basis_cols ||
-        provisional_column - num_basis_cols >= provisional_order.size()) {
-      throw std::logic_error("live ansatz column is out of range");
-    }
-    selection.ansatz_order.push_back(
-        provisional_order[provisional_column - num_basis_cols]);
   }
   const auto support_selected = Clock::now();
 
@@ -380,21 +400,23 @@ CompactSelection plan_compact_kernel(
     std::span<const firefly::FFInt> top_lp_coefficients,
     const firefly::FFInt& minus_half_d, std::span<const std::uint32_t> row_groups,
     std::span<const std::uint32_t> ordered_groups, AnsatzDotOrdering dot_ordering,
-    std::size_t planning_threads)
+    std::size_t planning_threads, bool check_master_independence)
 {
   CompactPhaseTimings projected_timings;
   if (target_columns.size() > 2) {
     auto projected = plan_compact_kernel_impl(
         basis_columns, target_columns, ansatz_columns, ansatz_metadata, row_sectors,
         polynomial_values, top_lp_coefficients, minus_half_d, true, row_groups,
-        ordered_groups, dot_ordering, planning_threads);
+        ordered_groups, dot_ordering, planning_threads, check_master_independence);
     if (projected.closed) return projected;
     projected_timings = projected.timings;
   }
   auto full = plan_compact_kernel_impl(
       basis_columns, target_columns, ansatz_columns, ansatz_metadata, row_sectors,
       polynomial_values, top_lp_coefficients, minus_half_d, false, row_groups,
-      ordered_groups, dot_ordering, planning_threads);
+      ordered_groups, dot_ordering, planning_threads, check_master_independence);
+  full.timings.master_rank_completion_ms += projected_timings.master_rank_completion_ms;
+  full.timings.master_rank_check_ms += projected_timings.master_rank_check_ms;
   full.provisional_rhs_fallback = target_columns.size() > 2;
   full.timings.provisional_build_ms += projected_timings.provisional_build_ms;
   full.timings.provisional_elimination_ms +=

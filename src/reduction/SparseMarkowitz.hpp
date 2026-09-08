@@ -35,6 +35,9 @@ struct SparseMarkowitzStatistics {
   std::size_t parallel_refresh_batches = 0;
   std::size_t parallel_refresh_columns = 0;
   std::size_t stale_choice_pops = 0;
+  std::size_t choice_queue_compactions = 0;
+  std::size_t compacted_choice_entries = 0;
+  std::size_t maximum_choice_queue_size = 0;
   std::size_t row_eliminations = 0;
   std::size_t parallel_row_batches = 0;
   std::size_t parallel_row_eliminations = 0;
@@ -57,7 +60,7 @@ compact_score_refresh_interval(std::size_t target_count,
 /// supplied group order (or its deterministic default); inside one group both
 /// the column and pivot row are selected dynamically by the Markowitz product,
 /// preferring a row from the column's matching group when one is available.
-template <typename T>
+template <typename T, bool CompactChoiceQueues = true>
 [[nodiscard]] EliminationResult sparse_markowitz_elimination(
     SparseMatrix<T>& matrix, size_t num_cols, std::vector<T>& right_hand_side,
     size_t rhs_cols, size_t required_prefix_cols,
@@ -498,6 +501,9 @@ template <typename T>
     }
     active_columns[column] = false;
     column_active_nonzeros[column] = 0;
+    // The completed column is never scanned again. Keep the echelon row for
+    // back substitution, but release its now-unused reverse incidence list.
+    std::vector<ColumnIncidence>().swap(column_rows[column]);
   };
 
   // The master-basis prefix is part of the public reduction convention and is
@@ -513,6 +519,7 @@ template <typename T>
             : choices.fallback;
     if (choice.column == std::numeric_limits<size_t>::max()) {
       active_columns[column] = false;
+      std::vector<ColumnIncidence>().swap(column_rows[column]);
       continue;
     }
     if (row_groups[choice.row] != column_groups[column]) ++cross_group_pivots;
@@ -577,8 +584,20 @@ template <typename T>
     auto worse = [&](const PivotChoice& lhs, const PivotChoice& rhs) {
       return better(rhs, lhs);
     };
-    using ChoiceQueue =
+    using ChoiceQueueBase =
         std::priority_queue<PivotChoice, std::vector<PivotChoice>, decltype(worse)>;
+    struct ChoiceQueue : ChoiceQueueBase {
+      using ChoiceQueueBase::ChoiceQueueBase;
+      auto& entries()
+      {
+        return this->c;
+      }
+      void rebuild()
+      {
+        std::make_heap(this->c.begin(), this->c.end(), this->comp);
+      }
+    };
+    std::size_t active_group_columns = 0;
     ChoiceQueue matching_choices(worse);
     ChoiceQueue fallback_choices(worse);
     std::vector<size_t> refresh_columns;
@@ -631,6 +650,28 @@ template <typename T>
           fallback_choices.push(choices.fallback);
         }
       }
+      const auto compact_queue = [&](ChoiceQueue& queue) {
+        if (statistics != nullptr)
+          statistics->maximum_choice_queue_size =
+              std::max(statistics->maximum_choice_queue_size, queue.size());
+        if constexpr (CompactChoiceQueues) {
+          if (queue.size() <= std::max<std::size_t>(1024, 4 * active_group_columns))
+            return;
+          const auto removed = std::erase_if(queue.entries(), [&](const auto& choice) {
+            // Current-version entries must survive even when their pivot value
+            // vanished: discard_stale uses them to trigger a fresh column score.
+            return !active_columns[choice.column] ||
+                   score_versions[choice.column] != choice.version;
+          });
+          queue.rebuild();
+          if (statistics != nullptr) {
+            ++statistics->choice_queue_compactions;
+            statistics->compacted_choice_entries += removed;
+          }
+        }
+      };
+      compact_queue(matching_choices);
+      compact_queue(fallback_choices);
       if (statistics != nullptr) {
         statistics->score_refresh_ms += milliseconds(refresh_start, Clock::now());
         statistics->score_refresh_columns += refresh_columns.size();
@@ -648,6 +689,7 @@ template <typename T>
     for (const size_t column : group_columns) {
       if (active_columns[column]) initial_columns.push_back(column);
     }
+    active_group_columns = initial_columns.size();
     refresh_batch(initial_columns, false);
     // The compact planner supplies a single-pass interval selected from target-
     // support width and system size. Narrow supports retain the interval-16
@@ -713,6 +755,7 @@ template <typename T>
           }
           active_columns[column] = false;
           column_active_nonzeros[column] = 0;
+          std::vector<ColumnIncidence>().swap(column_rows[column]);
         }
         break;
       }
@@ -720,6 +763,7 @@ template <typename T>
           !matching_choices.empty() ? matching_choices.top() : fallback_choices.top();
       if (row_groups[choice.row] != column_groups[choice.column]) ++cross_group_pivots;
       apply_pivot(choice);
+      --active_group_columns;
       ++pivots_since_refresh;
     }
     if (statistics != nullptr)

@@ -268,8 +268,9 @@ BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
                            arithmetic.multiply(instruction.w_ff,
                                                top_lp_values[instruction.expression]));
       }
-      if (!linalg::execute_matrix_tape_capture(matrix, block.compiled_tape,
-                                               elimination_factors, arithmetic)) {
+      if (!linalg::execute_matrix_tape_capture_compact(
+              matrix, block.compiled_tape, elimination_factors, arithmetic,
+              master_program.factor_capture_slots, master_program.factor_count)) {
         return {};
       }
       const auto& operations = selected_block == nullptr ? master_program.operations

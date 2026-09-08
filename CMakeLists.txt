@@ -40,6 +40,10 @@ pkg_check_modules(FLINT REQUIRED IMPORTED_TARGET flint)
 pkg_check_modules(FIREFLY REQUIRED IMPORTED_TARGET firefly)
 find_package(Threads REQUIRED)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/firefly-2.0.3-overlay/firefly/Reconstructor.hpp")
+  message(FATAL_ERROR "Missing FeynmanReducer FireFly overlay; restore Program/third_party")
+endif()
+
 if(NOT FIREFLY_VERSION VERSION_EQUAL "2.0.3")
   message(FATAL_ERROR
     "FeynmanReducer's reconstruction overlay requires FireFly 2.0.3; "

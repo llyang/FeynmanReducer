@@ -152,13 +152,30 @@ void import_polynomial(fmpz_mpoly_struct* destination,
   std::vector<ulong> powers(context.variable_names().size(), 0);
   FmpzValue coefficient;
   FmpzValue multiplier;
-  for (const auto& term : source.coefs) {
-    set_rational(rational, term.coef);
-    fmpz_divexact(multiplier.raw(), common_denominator, fmpq_denref(rational.raw()));
-    fmpz_mul(coefficient.raw(), fmpq_numref(rational.raw()), multiplier.raw());
-    set_term_powers(powers, term, source.get_var_pos(), order);
-    fmpz_mpoly_set_coeff_fmpz_ui(destination, coefficient.raw(), powers.data(),
-                                 context.raw());
+  const auto insert_terms = [&](bool bulk) {
+    for (const auto& term : source.coefs) {
+      set_rational(rational, term.coef);
+      fmpz_divexact(multiplier.raw(), common_denominator, fmpq_denref(rational.raw()));
+      fmpz_mul(coefficient.raw(), fmpq_numref(rational.raw()), multiplier.raw());
+      set_term_powers(powers, term, source.get_var_pos(), order);
+      if (bulk)
+        fmpz_mpoly_push_term_fmpz_ui(destination, coefficient.raw(), powers.data(),
+                                     context.raw());
+      else
+        fmpz_mpoly_set_coeff_fmpz_ui(destination, coefficient.raw(), powers.data(),
+                                     context.raw());
+    }
+  };
+  fmpz_mpoly_fit_length(destination, static_cast<slong>(source.coefs.size()),
+                        context.raw());
+  insert_terms(true);
+  fmpz_mpoly_sort_terms(destination, context.raw());
+  if (!fmpz_mpoly_is_canonical(destination, context.raw())) {
+    // Public FireFly coefficient vectors can contain repeated exponents (also
+    // after padding short power vectors). Preserve the previous last-write wins
+    // behavior, including explicit zeros, rather than summing duplicate terms.
+    fmpz_mpoly_zero(destination, context.raw());
+    insert_terms(false);
   }
 }
 
@@ -199,13 +216,14 @@ import_rational_impl(const firefly::RationalFunction& source,
                              numerator_denominator.raw(), context->raw());
   result.canonicalise();
 
-  for (const auto& source_factor : source.get_factors()) {
+  const auto factors = source.get_factors();
+  for (const auto& source_factor : factors) {
     FlintRational factor = import_rational_impl(source_factor, context, true);
     FlintRational product(context);
     fmpz_mpoly_q_mul(product.raw(), result.raw(), factor.raw(), context->raw());
     result = std::move(product);
   }
-  result.canonicalise();
+  if (!factors.empty()) result.canonicalise();
   return result;
 }
 

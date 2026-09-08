@@ -158,7 +158,7 @@ TopLpTargetPlan compile_top_lp_target_plan(const Config& config)
       result.maximum_g_shift = std::max(
           result.maximum_g_shift, static_cast<unsigned>(-column.back().powers.front()));
     }
-    result.columns.push_back(column);
+    result.columns.push_back(std::move(column));
   }
   return result;
 }

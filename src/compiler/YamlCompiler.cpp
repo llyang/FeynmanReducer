@@ -22,10 +22,20 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
   if (!root.IsMap()) {
     throw std::runtime_error("top-level YAML value must be a mapping");
   }
-  static constexpr std::array<std::string_view, 12> allowed_fields{
-      "kinematics",       "propagators",  "top_sector",      "integral_header",
-      "symmetry_backend", "targets_file", "threads",         "singular_path",
-      "factor_scan",      "shift_scan",   "basis_selection", "numerics"};
+  static constexpr std::array<std::string_view, 13> allowed_fields{
+      "kinematics",
+      "propagators",
+      "top_sector",
+      "integral_header",
+      "symmetry_backend",
+      "targets_file",
+      "threads",
+      "singular_path",
+      "factor_scan",
+      "shift_scan",
+      "basis_selection",
+      "numerics",
+      "check_master_independence"};
   for (const auto& entry : root) {
     if (!entry.first.IsScalar()) {
       throw std::runtime_error("top-level config field names must be strings");
@@ -102,6 +112,8 @@ Config compile_yaml_config(const std::filesystem::path& filepath)
       throw std::runtime_error("basis_selection must be 'default' or 'd-separating'");
     }
   }
+  if (root["check_master_independence"])
+    config.check_master_independence = root["check_master_independence"].as<bool>();
   if (root["factor_scan"]) config.factor_scan = root["factor_scan"].as<bool>();
   if (root["shift_scan"]) config.shift_scan = root["shift_scan"].as<bool>();
   return config;
