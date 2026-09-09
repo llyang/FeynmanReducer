@@ -3,6 +3,7 @@
 #include "core/ProbeValues.hpp"
 #include "reduction/EliminationTape.hpp"
 #include "reduction/EquationGenerator.hpp"
+#include "reduction/FiniteFieldArithmetic.hpp"
 #include "reduction/KernelPlanning.hpp"
 #include "reduction/ParameterEvaluation.hpp"
 #include "reduction/ProjectedSeedExpansion.hpp"
@@ -142,46 +143,46 @@ ProbeSelection select_at_probe(const IndexedSelectionSystem& symbolic,
                                const Config& config, std::uint64_t prime,
                                std::size_t point)
 {
+  using Field = finite_field::MontgomeryFieldElement;
+  Field::set_prime(prime);
   const auto values = parameter_values(config.parameters.size(), prime, point);
   const auto coefficients = polynomial_values(config, values);
   const T minus_half_d =
       (T(0) - reduction::detail::evaluate_dimension(config, values)) / T(2);
 
   const std::size_t column_count = symbolic.columns.size();
-  std::vector<std::vector<std::pair<std::uint32_t, T>>> columns(column_count);
-  const auto append = [&](std::size_t column) {
-    auto& entries = columns[column];
-    const auto terms = symbolic.columns.column(column);
-    entries.reserve(terms.size());
-    for (const auto& term : terms) {
-      const T value = evaluate(term, coefficients, minus_half_d);
-      if (value != T(0)) entries.emplace_back(term.row, value);
-    }
-    std::ranges::sort(entries, {}, &std::pair<std::uint32_t, T>::first);
-    std::size_t write = 0;
-    for (const auto& entry : entries) {
-      if (write != 0 && entries[write - 1].first == entry.first) {
-        entries[write - 1].second = entries[write - 1].second + entry.second;
-        if (entries[write - 1].second == T(0)) --write;
-      } else {
-        entries[write++] = entry;
+  linalg::SparseMatrix<Field> matrix(symbolic.row_powers.size());
+  // Only one evaluated column is needed while assembling the row matrix.
+  // Release it before elimination rather than retaining a second numeric system.
+  {
+    std::vector<std::pair<std::uint32_t, Field>> entries;
+    for (std::size_t column = 0; column < column_count; ++column) {
+      entries.clear();
+      const auto terms = symbolic.columns.column(column);
+      entries.reserve(terms.size());
+      for (const auto& term : terms) {
+        const T value = evaluate(term, coefficients, minus_half_d);
+        if (value != T(0)) entries.emplace_back(term.row, Field::from_residue(value.n));
       }
-    }
-    entries.resize(write);
-  };
-  for (std::size_t column = 0; column < column_count; ++column)
-    append(column);
-
-  linalg::SparseMatrix<T> matrix(symbolic.row_powers.size());
-  for (std::size_t column = 0; column < columns.size(); ++column) {
-    for (const auto& [row, value] : columns[column]) {
-      matrix[row].push_back({column, value});
+      std::ranges::sort(entries, {}, &std::pair<std::uint32_t, Field>::first);
+      std::size_t write = 0;
+      for (const auto& entry : entries) {
+        if (write != 0 && entries[write - 1].first == entry.first) {
+          entries[write - 1].second = entries[write - 1].second + entry.second;
+          if (entries[write - 1].second == Field(0)) --write;
+        } else {
+          entries[write++] = entry;
+        }
+      }
+      entries.resize(write);
+      for (const auto& [row, value] : entries)
+        matrix[row].push_back({column, value});
     }
   }
-  std::vector<T> no_rhs;
+  std::vector<Field> no_rhs;
   ProbeSelection result;
-  auto elimination = linalg::sparse_gaussian_elimination(matrix, column_count, no_rhs,
-                                                         0, column_count);
+  auto elimination = linalg::sparse_gaussian_elimination<Field, true>(
+      matrix, column_count, no_rhs, 0, column_count);
   for (const std::size_t column : elimination.solution_cols) {
     if (column >= symbolic.relation_count) {
       result.selected_candidates.push_back(column - symbolic.relation_count);

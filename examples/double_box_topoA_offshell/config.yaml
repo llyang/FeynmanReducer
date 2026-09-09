@@ -1,0 +1,35 @@
+kinematics:
+  loop_momenta: ["k1", "k2"]
+  external_momenta: ["q1", "q2", "q3", "q4"]
+  conservation:
+    "q4": "q1+q2+q3"
+  invariants:
+    "q1^2": "0"
+    "q2^2": "0"
+    "q3^2": "0"
+    "q4^2": "mh2"
+    "(q1+q2)^2": "s"
+    "(q1+q3)^2": "t"
+
+propagators:
+  - "k1^2-mt2"
+  - "k2^2-mt2"
+  - "(k1-k2)^2"
+  - "(k1-q1)^2-mt2"
+  - "(k2-q1)^2-mt2"
+  - "(k1-q1-q2)^2-mt2"
+  - "(k2-q1-q2)^2-mt2"
+  - "(k1-q1-q2-q3)^2-mt2"
+  - "(k2-q1-q2-q3)^2-mt2"
+
+top_sector: [1, 0, 1, 1, 1, 1, 1, 1, 0]
+
+integral_header: "F1"
+
+symmetry_backend: nauty
+
+threads: 24
+factor_scan: true
+shift_scan: true
+
+targets_file: "targets.txt"

@@ -264,7 +264,7 @@ inline void sparse_eliminate_active_row(SparseRow<T>& target, const SparseRow<T>
 
 /// Probe-only sparse Gaussian elimination. Columns retain their original
 /// priority; within a column the sparsest available row is selected.
-template <typename T>
+template <typename T, bool ReleaseCompletedColumns = false>
 [[nodiscard]] EliminationResult
 sparse_gaussian_elimination(SparseMatrix<T>& matrix, size_t num_cols,
                             std::vector<T>& right_hand_side, size_t rhs_cols,
@@ -341,6 +341,8 @@ sparse_gaussian_elimination(SparseMatrix<T>& matrix, size_t num_cols,
       }
     }
     if (best_row == num_rows) {
+      if constexpr (ReleaseCompletedColumns)
+        std::vector<size_t>().swap(column_rows[column]);
       if (column + 1 >= required_prefix_cols && residual_nonzero_rows == 0) break;
       continue;
     }
@@ -369,6 +371,11 @@ sparse_gaussian_elimination(SparseMatrix<T>& matrix, size_t num_cols,
       if (!used[row] && sparse_find(matrix[row], column) != nullptr)
         candidates.push_back(row);
     }
+    // Rank-only callers can release completed incidence lists without changing
+    // the allocation schedule of fixed-basis kernel planning. Candidate row ids
+    // are already copied, and the echelon remains available for back substitution.
+    if constexpr (ReleaseCompletedColumns)
+      std::vector<size_t>().swap(column_rows[column]);
     for (const size_t row : candidates) {
       const T* factor_ptr = sparse_find(matrix[row], column);
       if (factor_ptr == nullptr || *factor_ptr == T(0)) continue;
