@@ -8,11 +8,13 @@
 namespace masters {
 
 // Discovers deterministic local candidates. Positive-dimensional sectors are
-// returned for relation selection by the reduction kernel.
+// returned for relation selection by the reduction kernel. Fully isolated families
+// use regulated net counts to choose between local and global selection;
+// unresolved counts fail before candidates are returned.
 [[nodiscard]] MasterCandidateSet
 find_master_candidates(const MasterFinderConfig& config);
 
-// Resolves a positive-dimensional candidate pool with the deterministic global
+// Resolves a global-selection candidate pool with the deterministic global
 // quotient-rank selector.  The caller can reuse an already discovered pool
 // without repeating the Singular sector scan.
 [[nodiscard]] std::vector<Integral>

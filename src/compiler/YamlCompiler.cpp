@@ -22,7 +22,8 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
   if (!root.IsMap()) {
     throw std::runtime_error("top-level YAML value must be a mapping");
   }
-  static constexpr std::array<std::string_view, 13> allowed_fields{
+  static constexpr std::array<std::string_view, 14> allowed_fields{
+      "reconstruction_scale",
       "kinematics",
       "propagators",
       "top_sector",
@@ -116,6 +117,16 @@ Config compile_yaml_config(const std::filesystem::path& filepath)
     config.check_master_independence = root["check_master_independence"].as<bool>();
   if (root["factor_scan"]) config.factor_scan = root["factor_scan"].as<bool>();
   if (root["shift_scan"]) config.shift_scan = root["shift_scan"].as<bool>();
+  if (root["reconstruction_scale"])
+    config.reconstruction_scale = root["reconstruction_scale"].as<std::string>();
+  if (config.reconstruction_scale != "auto" && config.reconstruction_scale != "off") {
+    if (!config.scale_homogeneous)
+      throw std::runtime_error("reconstruction_scale: " + config.scale_homogeneity_reason);
+    if (std::ranges::find(config.reconstruction_scale_candidates,
+                          config.reconstruction_scale) ==
+        config.reconstruction_scale_candidates.end())
+      throw std::runtime_error("reconstruction_scale must name a free kinematic parameter in F");
+  }
   return config;
 }
 

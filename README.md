@@ -11,6 +11,7 @@ the resulting coefficients with FireFly.
   `unsigned __int128` support
 - A POSIX/Unix-like system with pthreads
 - yaml-cpp
+- zlib (gzip reference inputs for `reduction_validate`)
 - FLINT
 - FireFly 2.0.3
 - Singular 4.x with `primdec.lib`
@@ -24,14 +25,14 @@ pkg-config --exists flint firefly
 
 ## Build
 
-Configure and build the Release preset from the repository root:
+Configure and build the Release preset from the `Program/` directory (the release-source root):
 
 ```bash
 cmake --preset default
 cmake --build --preset default -j8
 ```
 
-The executable is written to `build/FeynmanReducer`.
+The executables are written to `build/FeynmanReducer` and `build/reduction_validate`.
 
 Release builds are optimized for the build machine by default. To build a
 portable binary instead, configure with native CPU optimization disabled:
@@ -79,3 +80,12 @@ outputs/final_basis.txt
 outputs/reduction_YYMMDDHHMMSS.log
 outputs/firefly.log                 # only when FireFly emits a raw log
 ```
+
+Coefficients retain polynomial factors and powers. After reconstruction, mixed
+D/kinematic denominator factors produce a warning with default basis selection
+and an error with explicit `d-separating`; the check is skipped when D is fixed.
+
+`build/reduction_validate -i examples/double_box_outer_massive/config.yaml`
+compares the output with static Kira references. The default reference is
+`validation/kira_integrals.m`, falling back to `.m.gz` when plain text is absent.
+Gzip input is decompressed in memory by zlib.

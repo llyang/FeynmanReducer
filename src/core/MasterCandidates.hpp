@@ -17,8 +17,8 @@ enum class MasterCandidateMode {
 // reduction API from importing the discovery implementation.
 struct MasterCandidateSet {
   std::vector<Integral> integrals;
-  // Positive-dimensional and zero-candidate sector corners that must still
-  // seed the relation envelope.
+  // Positive-dimensional, dimension-mismatched and zero-candidate corners that must
+  // still seed the relation envelope.
   std::vector<std::uint32_t> relation_source_sectors;
   MasterCandidateMode mode = MasterCandidateMode::FinalBasis;
 

@@ -679,11 +679,12 @@ TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
               Rational(-1) / Rational(2)));
   }
   const Polynomial scalar_j = substitute(denominator, zero_loops);
-  const Polynomial polynomial_u = determinant(matrix);
-  Polynomial polynomial_g = polynomial_u + (-polynomial_u * scalar_j +
-                                            quadratic_form(vector_q, adjugate(matrix)));
-  polynomial_g =
-      replace_external_products(polynomial_g, independent_indices, scalar_solutions);
+  const Polynomial polynomial_u = replace_external_products(
+      determinant(matrix), independent_indices, scalar_solutions);
+  const Polynomial polynomial_f = replace_external_products(
+      -polynomial_u * scalar_j + quadratic_form(vector_q, adjugate(matrix)),
+      independent_indices, scalar_solutions);
+  const Polynomial polynomial_g = polynomial_u + polynomial_f;
 
   std::vector<std::size_t> parameter_indices;
   parameter_indices.reserve(kinematic_parameters.size());
@@ -759,6 +760,47 @@ TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
   fmpz_clear(coefficient_denominator_lcm);
 
   TopologyConfig config;
+  config.scale_homogeneous = true;
+  config.scale_homogeneity_reason.clear();
+  std::set<std::string> scale_candidates;
+  const auto check_homogeneity = [&](const Polynomial& polynomial,
+                                      unsigned parameter_degree,
+                                      unsigned x_degree, bool compact,
+                                      const std::string& label) {
+    for (const auto& [powers, coefficient] : polynomial.terms) {
+      if (coefficient.is_zero()) continue;
+      if (compact) {
+        bool survives = true;
+        for (std::size_t slot = 0; slot < x_indices.size(); ++slot)
+          if (top_sector[slot] == 0 && powers[x_indices[slot]] != 0) survives = false;
+        if (!survives) continue;
+      }
+      std::int64_t degree = 0;
+      std::int64_t alpha_degree = 0;
+      for (const auto index : parameter_indices) degree += powers[index];
+      for (const auto index : x_indices) alpha_degree += powers[index];
+      if (degree != parameter_degree || alpha_degree != x_degree) {
+        config.scale_homogeneous = false;
+        if (config.scale_homogeneity_reason.empty())
+          config.scale_homogeneity_reason = std::format(
+              "{} is not homogeneous after numerics (kinematic degree {}, expected {}; "
+              "Feynman-parameter degree {}, expected {})",
+              label, degree, parameter_degree, alpha_degree, x_degree);
+      }
+      if (parameter_degree == 1)
+        for (std::size_t index = 0; index < parameter_indices.size(); ++index)
+          if (powers[parameter_indices[index]] != 0)
+            scale_candidates.insert(kinematic_parameters[index]);
+    }
+  };
+  for (const bool compact : {true, false}) {
+    const std::string prefix = compact ? "denominator " : "extended ";
+    check_homogeneity(polynomial_u, 0, static_cast<unsigned>(loop_count), compact,
+                       prefix + "U");
+    check_homogeneity(polynomial_f, 1, static_cast<unsigned>(loop_count + 1), compact,
+                       prefix + "F");
+  }
+  config.reconstruction_scale_candidates.assign(scale_candidates.begin(), scale_candidates.end());
   config.loop_count = static_cast<unsigned>(loop_names.size());
   config.propagator_count = static_cast<unsigned>(propagator_slots.size());
   config.integral_count = static_cast<unsigned>(propagator_text.size());

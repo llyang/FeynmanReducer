@@ -35,6 +35,7 @@ if(NOT FR_HAVE_UNSIGNED_INT128)
 endif()
 
 find_package(yaml-cpp REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLINT REQUIRED IMPORTED_TARGET flint)
 pkg_check_modules(FIREFLY REQUIRED IMPORTED_TARGET firefly)
@@ -201,6 +202,7 @@ endif()
 
 add_library(feynman_reducer_model STATIC
   src/core/FlintRational.cpp
+  src/core/FactorizedRational.cpp
   src/core/IntegralFormatting.cpp
 )
 target_include_directories(feynman_reducer_model PUBLIC src)
@@ -278,6 +280,8 @@ add_library(feynman_reducer_reduction STATIC
   src/reduction/DirectSeedExpansion.cpp
   src/reduction/ReferencePlanBuilder.cpp
   src/reduction/EquationGenerator.cpp
+  src/reduction/ScaleReconstruction.cpp
+  src/reduction/DSeparationCheck.cpp
   src/reduction/FireflyResultImport.cpp
   src/reduction/FeynmanReducer.cpp
   src/masters/detail/GlobalBasisSelector.cpp
@@ -311,6 +315,8 @@ target_link_libraries(feynman_reducer_reduction
 add_library(feynman_reducer_masters STATIC
   src/masters/MasterFinder.cpp
   src/masters/detail/SingularProcess.cpp
+  src/masters/detail/SectorDimensionCounter.cpp
+  src/masters/detail/MasterSectorAnalysis.cpp
 )
 target_include_directories(feynman_reducer_masters PUBLIC src)
 target_link_libraries(feynman_reducer_masters
@@ -359,6 +365,7 @@ add_executable(
   src/validation/ReductionValidator.cpp
 )
 target_link_libraries(reduction_validate PRIVATE
+  ZLIB::ZLIB
   feynman_reducer_compiler
   feynman_reducer_model
   feynman_reducer_warnings

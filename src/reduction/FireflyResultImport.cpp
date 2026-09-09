@@ -1,4 +1,5 @@
 #include "reduction/FireflyResultImport.hpp"
+#include "core/detail/FactorizedRationalBuilder.hpp"
 
 #include <firefly/Polynomial.hpp>
 #include <firefly/RationalFunction.hpp>
@@ -214,16 +215,9 @@ import_rational_impl(const firefly::RationalFunction& source,
   fmpz_mpoly_scalar_mul_fmpz(fmpz_mpoly_q_denref(result.raw()),
                              fmpz_mpoly_q_denref(result.raw()),
                              numerator_denominator.raw(), context->raw());
-  result.canonicalise();
+  // Leave the local rational unreduced: the residual builder canonicalizes it
+  // once, while scanned factors are factored separately and cancelled at finish.
 
-  const auto factors = source.get_factors();
-  for (const auto& source_factor : factors) {
-    FlintRational factor = import_rational_impl(source_factor, context, true);
-    FlintRational product(context);
-    fmpz_mpoly_q_mul(product.raw(), result.raw(), factor.raw(), context->raw());
-    result = std::move(product);
-  }
-  if (!factors.empty()) result.canonicalise();
   return result;
 }
 
@@ -231,14 +225,23 @@ import_rational_impl(const firefly::RationalFunction& source,
 
 namespace reduction_detail {
 
-FlintRational
+FactorizedRational
 import_firefly_rational(const firefly::RationalFunction& source,
                         const std::shared_ptr<const FlintRationalContext>& context)
 {
   if (!context) {
     throw std::runtime_error("FireFly result import requires a FLINT context");
   }
-  return import_rational_impl(source, context, false);
+  factorized_detail::Builder result(import_rational_impl(source, context, false));
+  const auto add_factors = [&](const auto& self,
+                               const firefly::RationalFunction& parent) -> void {
+    for (const auto& factor : parent.get_factors()) {
+      result.add_scanned_factor(import_rational_impl(factor, context, true));
+      self(self, factor);
+    }
+  };
+  add_factors(add_factors, source);
+  return std::move(result).finish();
 }
 
 } // namespace reduction_detail

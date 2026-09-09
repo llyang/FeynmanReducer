@@ -1,5 +1,6 @@
 #include "reduction/BlackBoxFeynman.hpp"
 #include "reduction/EquationGenerator.hpp"
+#include "reduction/KernelErrors.hpp"
 #include "reduction/KernelPlanning.hpp"
 #include "reduction/ParameterEvaluation.hpp"
 #include "reduction/ProjectedSeedExpansion.hpp"
@@ -98,7 +99,7 @@ void BlackBoxFeynman::plan_kernel_impl(
         powers[variable + 1] = integral.indices[variable_slots[variable]] - 1;
       auto canonical = planner.canonicalizer.canonicalize(powers);
       if (!representatives.insert(std::move(canonical)).second) {
-        throw std::runtime_error("basis contains symmetry-equivalent integrals");
+        throw reduction::detail::SymmetryEquivalentBasisError();
       }
     }
   };
@@ -138,6 +139,7 @@ void BlackBoxFeynman::plan_kernel_impl(
           std::chrono::high_resolution_clock::now() - initial_domain_start)
           .count();
   std::map<ProjectedSeedGroup, unsigned, ProjectedSeedGroupLess> expanded_groups;
+  std::set<ProjectedSeedGroup, ProjectedSeedGroupLess> activated_groups;
   std::size_t expansion_rounds = 0;
   std::size_t expanded_points = 0;
 
@@ -508,7 +510,9 @@ void BlackBoxFeynman::plan_kernel_impl(
       const auto expansion_start = std::chrono::high_resolution_clock::now();
       std::set<ProjectedSeedGroup, ProjectedSeedGroupLess> residual_groups;
       std::set<ProjectedSeedGroup, ProjectedSeedGroupLess> requested_groups;
-      const unsigned deepest_seed_shift = seed_layers.back().g_shift;
+      unsigned deepest_seed_shift = seed_layers.back().g_shift;
+      for (const auto& seed : envelope_grid)
+        deepest_seed_shift = std::max(deepest_seed_shift, projected_g_shift(seed));
       for (const std::size_t row : selection.residual_rows) {
         if (row >= residual_row_keys.size()) {
           throw std::logic_error("compact residual row is out of range");
@@ -517,13 +521,29 @@ void BlackBoxFeynman::plan_kernel_impl(
         residual_groups.insert(residual_key);
         requested_groups.insert(
             {std::min(residual_key.g_shift, deepest_seed_shift), residual_key.sector});
+        // Both q and q-1 seeds can supply rows at q. The latter must remain
+        // eligible after intermediate layers have been activated as well.
+        if (target_plan != nullptr && residual_key.g_shift != 0 &&
+            residual_key.g_shift - 1 <= deepest_seed_shift) {
+          requested_groups.insert({residual_key.g_shift - 1, residual_key.sector});
+        }
       }
 
       const std::size_t previous_points = envelope_grid.size();
       const std::vector requested(requested_groups.begin(), requested_groups.end());
-      auto expansion = reduction::detail::expand_projected_seed_groups(
-          envelope_grid, requested, expanded_groups, planner.sectors,
-          planner.canonicalizer);
+      reduction::detail::ProjectedSeedExpansion expansion;
+      if (target_plan != nullptr) {
+        const std::vector residuals(residual_groups.begin(), residual_groups.end());
+        expansion = reduction::detail::activate_projected_seed_groups(
+            envelope_grid, residuals, *target_plan, planner.equations,
+            planner.sectors, planner.canonicalizer);
+      }
+      const bool activated_layer = !expansion.points.empty();
+      if (!activated_layer) {
+        expansion = reduction::detail::expand_projected_seed_groups(
+            envelope_grid, requested, expanded_groups, planner.sectors,
+            planner.canonicalizer);
+      }
       envelope_grid.insert(envelope_grid.end(),
                            std::make_move_iterator(expansion.points.begin()),
                            std::make_move_iterator(expansion.points.end()));
@@ -540,9 +560,10 @@ void BlackBoxFeynman::plan_kernel_impl(
       };
       if (progress) {
         progress(std::format(
-                     "Projected residual expansion: round={}, residual_groups={}, "
+                     "Projected {}: round={}, residual_groups={}, "
                      "added_groups={}, added_points={}, residual_keys=[{}], "
                      "added_keys=[{}]",
+                     activated_layer ? "G-layer activation" : "residual expansion",
                      expansion_rounds + 1, residual_groups.size(),
                      expansion.groups.size(), added_points,
                      format_groups(residual_groups), format_groups(expansion.groups)),
@@ -551,6 +572,12 @@ void BlackBoxFeynman::plan_kernel_impl(
       if (selection.residual_rows.empty() || expansion.groups.empty() ||
           added_points == 0) {
         throw AnsatzClosureError();
+      }
+      if (activated_layer) {
+        activated_groups.insert(expansion.groups.begin(), expansion.groups.end());
+        ++kernel_statistics_.g_layer_activation_rounds;
+        kernel_statistics_.g_layer_activated_groups += expansion.groups.size();
+        kernel_statistics_.g_layer_activated_points += added_points;
       }
       ++expansion_rounds;
       expanded_points += added_points;
@@ -612,9 +639,13 @@ void BlackBoxFeynman::plan_kernel_impl(
           ReductionProgressEvent::info);
     }
 
+    std::size_t total_expanded_groups = expanded_groups.size();
+    for (const auto& group : activated_groups)
+      if (!expanded_groups.contains(group)) ++total_expanded_groups;
     publish_ansatz_statistics(selection, ansatz_metadata, num_rows,
                               generated_column_count, expansion_rounds,
-                              expanded_groups.size(), expanded_points);
+                              total_expanded_groups,
+                              expanded_points);
     std::vector<std::size_t> ansatz_order = std::move(selection.ansatz_order);
     std::vector<std::size_t> solution_cols = std::move(selection.solution_columns);
     std::vector<std::size_t> elim_row_map = std::move(selection.elimination_row_map);
@@ -629,7 +660,8 @@ void BlackBoxFeynman::plan_kernel_impl(
                            "cross_group_pivots={}, compression_ratio={:.3f}, "
                            "elapsed_ms={:.2f}",
                            kernel_statistics_.compact_policy, expansion_rounds,
-                           expanded_groups.size(), expanded_points, num_rows,
+                           total_expanded_groups,
+                           expanded_points, num_rows,
                            generated_column_count, provisional_dimension,
                            num_ansatz_cols, solution_cols.size(),
                            selection.cross_group_pivots,

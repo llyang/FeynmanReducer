@@ -66,8 +66,9 @@ int main(int argc, char** argv)
           << "Usage: reduction_validate [-i config.yaml]\n"
              "                          [--result outputs/results.m]\n"
              "                          [--basis outputs/final_basis.txt]\n"
-             "                          [--kira-result validation/kira_integrals.m]\n"
-             "                          [--kira-basis validation/masters]\n";
+             "                          [--kira-result PATH (.m or .m.gz)]\n"
+             "                          [--kira-basis validation/masters]\n"
+             "Default Kira result: validation/kira_integrals.m, or .m.gz if absent.\n";
       return 0;
     }
     if (!std::filesystem::is_regular_file(options.config)) {
@@ -76,10 +77,15 @@ int main(int argc, char** argv)
     }
     const auto parent = options.config.parent_path();
     const auto numerics = compile_yaml_numerics(options.config);
+    auto kira_result =
+        resolve(parent, options.kira_result, "validation/kira_integrals.m");
+    if (options.kira_result.empty() && !std::filesystem::exists(kira_result)) {
+      kira_result += ".gz";
+    }
     const validation::ValidationFiles files{
         resolve(parent, options.result, "outputs/results.m"),
         resolve(parent, options.basis, "outputs/final_basis.txt"),
-        resolve(parent, options.kira_result, "validation/kira_integrals.m"),
+        kira_result,
         resolve(parent, options.kira_basis, "validation/masters"),
         numerics,
     };

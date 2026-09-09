@@ -5,8 +5,11 @@
 #include "masters/detail/GlobalBasisSelector.hpp"
 #include "masters/detail/IsolatedSymmetryBasis.hpp"
 #include "masters/detail/MasterIntegralOrdering.hpp"
+#include "masters/detail/MasterSectorAnalysis.hpp"
 #include "masters/detail/MonomialPreference.hpp"
 #include "masters/detail/NonisolatedSingular.hpp"
+#include "masters/detail/SectorDimensionCounter.hpp"
+#include "masters/detail/SingularProbeSupport.hpp"
 #include "masters/detail/SingularProcess.hpp"
 #include "symmetry/Symmetry.hpp"
 #include "topology/IntegralLayout.hpp"
@@ -20,12 +23,14 @@
 #include <bit>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -33,11 +38,7 @@
 
 namespace {
 
-constexpr std::array<std::uint32_t, 2> kProbeCharacteristics{32003, 31991};
-std::uint32_t probe_value(std::size_t parameter, std::size_t attempt)
-{
-  return probe_values::value(parameter, attempt);
-}
+constexpr auto kProbeCharacteristics = masters::detail::singular_probe_primes;
 
 std::string marker(std::size_t probe, const std::string& name)
 {
@@ -72,72 +73,19 @@ std::uint32_t global_variable(const TopologyConfig& topology, std::uint32_t vari
   return topology.propagator_slots[variable];
 }
 
-std::uint32_t finite_field_coefficient(const PolynomialTerm& term, std::size_t probe,
-                                       std::uint32_t characteristic)
-{
-  if (term.weights.empty()) {
-    throw std::runtime_error("LP term has no coefficient weights");
-  }
-  auto modular_weight = [characteristic](std::int64_t weight) {
-    const std::int64_t modulus = characteristic;
-    std::int64_t result = weight % modulus;
-    if (result < 0) {
-      result += modulus;
-    }
-    return static_cast<std::uint64_t>(result);
-  };
-  std::uint64_t value = modular_weight(term.weights[0]);
-  for (std::size_t parameter = 1; parameter < term.weights.size(); ++parameter) {
-    value +=
-        modular_weight(term.weights[parameter]) * probe_value(parameter - 1, probe);
-    value %= characteristic;
-  }
-  return static_cast<std::uint32_t>(value);
-}
-
 std::string sector_polynomial(const TopologyConfig& topology, std::uint32_t sector,
-                              std::span<const std::uint32_t> active, std::size_t probe,
+                              std::span<const std::uint32_t>, std::size_t probe,
                               std::uint32_t characteristic)
 {
-  std::vector<std::string> terms;
-  for (const auto& term : topology.polynomial_terms) {
-    if (term.powers.size() != topology.propagator_count ||
-        term.weights.size() != topology.kinematic_parameters.size() + 1) {
-      throw std::runtime_error("compiled LP term has an invalid shape");
-    }
-    if (!polynomial_term_survives_sector(term, sector)) {
-      continue;
-    }
-    const std::uint32_t coefficient =
-        finite_field_coefficient(term, probe, characteristic);
-    if (coefficient == 0) {
-      continue;
-    }
-    std::vector<std::string> factors{std::to_string(coefficient)};
-    for (const auto variable : active) {
-      const auto exponent = term.powers[variable];
-      const auto global = global_variable(topology, variable);
-      if (exponent == 1) {
-        factors.push_back(std::format("x{}", global + 1));
-      } else if (exponent > 1) {
-        factors.push_back(std::format("x{}^{}", global + 1, exponent));
-      }
-    }
-    terms.push_back(std::accumulate(std::next(factors.begin()), factors.end(),
-                                    factors.front(),
-                                    [](std::string lhs, const std::string& rhs) {
-                                      return std::move(lhs) + "*" + rhs;
-                                    }));
-  }
-  if (terms.empty()) {
+  auto result = masters::detail::singular_sector_polynomial(
+      topology, sector, characteristic,
+      masters::detail::singular_kinematics(topology.kinematic_parameters.size(),
+                                           probe));
+  if (result == "0")
     throw std::runtime_error(
         std::format("finite-field probe {} annihilated LP polynomial in sector {}",
                     probe + 1, sector_notation(sector, topology)));
-  }
-  return std::accumulate(std::next(terms.begin()), terms.end(), terms.front(),
-                         [](std::string lhs, const std::string& rhs) {
-                           return std::move(lhs) + "+" + rhs;
-                         });
+  return result;
 }
 
 std::string ring_variables(const TopologyConfig& topology,
@@ -213,6 +161,34 @@ std::string symmetry_basis_script(const TopologyConfig& topology, std::uint32_t 
   return output.str();
 }
 
+std::string preferred_monomial_procedures(std::size_t probe)
+{
+  std::ostringstream output;
+  output << "  proc fr_max_exp_" << probe << "(poly fr_m)\n"
+         << "  {\n"
+         << "    intvec fr_e = leadexp(fr_m); int fr_max = 0; int fr_v;\n"
+         << "    for (fr_v=1; fr_v<=size(fr_e); fr_v++)\n"
+         << "    { if (fr_e[fr_v] > fr_max) { fr_max = fr_e[fr_v]; } }\n"
+         << "    return(fr_max);\n"
+         << "  }\n"
+         << "  proc fr_preferred_" << probe << "(poly fr_a, poly fr_b)\n"
+         << "  {\n"
+         << "    int fr_ma = fr_max_exp_" << probe << "(fr_a);\n"
+         << "    int fr_mb = fr_max_exp_" << probe << "(fr_b);\n"
+         << "    if (fr_ma < fr_mb) { return(1); }\n"
+         << "    if (fr_ma > fr_mb) { return(0); }\n"
+         << "    intvec fr_ea = leadexp(fr_a); intvec fr_eb = leadexp(fr_b);\n"
+         << "    int fr_v;\n"
+         << "    for (fr_v=1; fr_v<=size(fr_ea); fr_v++)\n"
+         << "    {\n"
+         << "      if (fr_ea[fr_v] > fr_eb[fr_v]) { return(1); }\n"
+         << "      if (fr_ea[fr_v] < fr_eb[fr_v]) { return(0); }\n"
+         << "    }\n"
+         << "    return(0);\n"
+         << "  }\n";
+  return output.str();
+}
+
 std::string probe_script(const TopologyConfig& topology, std::uint32_t sector,
                          std::span<const std::uint32_t> active, std::size_t probe)
 {
@@ -246,7 +222,7 @@ std::string probe_script(const TopologyConfig& topology, std::uint32_t sector,
          << "print(\"" << marker(probe, "DIM_BASIS_END") << "\");\n"
          << "if (dX" << probe << " == -1)\n{\n"
          << "  LIB \"primdec.lib\";\n"
-         << masters::detail::kNonisolatedSingularProcedures << "  list fr_count_result"
+         << "  list fr_count_result"
          << probe << " = fr_count_nonisolated(GX,0);\n"
          << "  ideal fr_nonisolated_basis" << probe << ";\n"
          << "  if (fr_count_result" << probe << "[2] == 0)\n  {\n"
@@ -278,28 +254,6 @@ std::string probe_script(const TopologyConfig& topology, std::uint32_t sector,
          << "}\n"
          << "if (dX" << probe << " > 0)\n{\n"
          << "  ideal KB = kbase(GX);\n"
-         << "  proc fr_max_exp_" << probe << "(poly fr_m)\n"
-         << "  {\n"
-         << "    intvec fr_e = leadexp(fr_m); int fr_max = 0; int fr_v;\n"
-         << "    for (fr_v=1; fr_v<=size(fr_e); fr_v++)\n"
-         << "    { if (fr_e[fr_v] > fr_max) { fr_max = fr_e[fr_v]; } }\n"
-         << "    return(fr_max);\n"
-         << "  }\n"
-         << "  proc fr_preferred_" << probe << "(poly fr_a, poly fr_b)\n"
-         << "  {\n"
-         << "    int fr_ma = fr_max_exp_" << probe << "(fr_a);\n"
-         << "    int fr_mb = fr_max_exp_" << probe << "(fr_b);\n"
-         << "    if (fr_ma < fr_mb) { return(1); }\n"
-         << "    if (fr_ma > fr_mb) { return(0); }\n"
-         << "    intvec fr_ea = leadexp(fr_a); intvec fr_eb = leadexp(fr_b);\n"
-         << "    int fr_v;\n"
-         << "    for (fr_v=1; fr_v<=size(fr_ea); fr_v++)\n"
-         << "    {\n"
-         << "      if (fr_ea[fr_v] > fr_eb[fr_v]) { return(1); }\n"
-         << "      if (fr_ea[fr_v] < fr_eb[fr_v]) { return(0); }\n"
-         << "    }\n"
-         << "    return(0);\n"
-         << "  }\n"
          << "  matrix fr_matrix" << probe << "[dX" << probe << "][dX" << probe << "];\n"
          << "  ideal fr_selected_basis" << probe << ",fr_degree_candidates" << probe
          << ";\n"
@@ -582,58 +536,101 @@ ProbeResult parse_probe_result(const std::string& output, std::size_t probe,
   return {full_dimension, false, std::move(monomials), std::move(symmetry_monomials)};
 }
 
-struct SectorBasis {
-  std::uint32_t sector = 0;
-  bool nonisolated = false;
-  std::vector<std::vector<int>> monomials;
-  std::optional<std::vector<std::vector<int>>> symmetry_monomials;
+using SectorBasis = masters::detail::CriticalSectorBasis;
+
+struct ProbeTask {
+  std::size_t sector_index = 0;
+  std::size_t probe = 0;
 };
 
-SectorBasis calculate_sector_basis(const MasterFinderConfig& config,
-                                   std::uint32_t sector)
+std::string task_marker(const ProbeTask& task, std::string_view boundary)
 {
-  const auto active =
-      integral_layout::active_variables(sector, config.propagator_count);
-  std::string script(masters::detail::kIsolatedSymmetryBasisProcedure);
-  for (std::size_t probe = 0; probe < kProbeCharacteristics.size(); ++probe) {
-    script += probe_script(config, sector, active, probe);
-    script += '\n';
-  }
-  script += "exit;\n";
-  const auto completed =
-      masters::detail::run_singular_process(config.singular_path, script);
-  if (!WIFEXITED(completed.status) || WEXITSTATUS(completed.status) != 0) {
-    throw std::runtime_error(std::format(
-        "Singular failed in sector {} (status {}): {}", sector_notation(sector, config),
-        completed.status, trim(completed.stderr_text)));
-  }
-
-  std::array<ProbeResult, 2> probes;
-  for (std::size_t probe = 0; probe < probes.size(); ++probe) {
-    try {
-      probes[probe] = parse_probe_result(completed.stdout_text, probe, active.size(),
-                                         sector_symmetry(config, sector) != nullptr);
-    } catch (const std::exception& error) {
-      throw std::runtime_error(std::format(
-          "failed to parse Singular probe {} in sector {}: {}; stderr: {}", probe + 1,
-          sector_notation(sector, config), error.what(), trim(completed.stderr_text)));
-    }
-  }
-  if (probes[0].dimension != probes[1].dimension ||
-      probes[0].nonisolated != probes[1].nonisolated ||
-      probes[0].monomials != probes[1].monomials ||
-      probes[0].symmetry_monomials != probes[1].symmetry_monomials) {
-    throw std::runtime_error(std::format("finite-field probes disagree in sector {}",
-                                         sector_notation(sector, config)));
-  }
-  return {sector, probes[0].nonisolated, std::move(probes[0].monomials),
-          std::move(probes[0].symmetry_monomials)};
+  return std::format("FR_MASTER_TASK_{}_{}_{}", task.sector_index, task.probe, boundary);
 }
 
-std::vector<std::uint32_t> representative_sectors(const MasterFinderConfig& config)
+std::vector<std::string> split_batch_output(const std::string& text,
+                                           const std::vector<ProbeTask>& tasks)
 {
-  const SectorUtils sector_utils(config);
-  auto sectors = sector_utils.enumerate_nonzero_sectors();
+  std::unordered_map<std::string, std::size_t> begins, ends;
+  for (std::size_t i = 0; i < tasks.size(); ++i) {
+    begins.emplace(task_marker(tasks[i], "BEGIN"), i);
+    ends.emplace(task_marker(tasks[i], "END"), i);
+  }
+  std::vector<std::string> outputs(tasks.size());
+  std::vector<bool> seen(tasks.size(), false);
+  std::optional<std::size_t> active;
+  std::istringstream input(text);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.starts_with("FR_MASTER_TASK_")) {
+      if (const auto found = begins.find(line); found != begins.end()) {
+        if (active || seen[found->second])
+          throw std::runtime_error("duplicate or nested Singular task boundary: " + line);
+        active = found->second;
+        seen[*active] = true;
+      } else if (const auto end = ends.find(line); end != ends.end()) {
+        if (!active || *active != end->second)
+          throw std::runtime_error("unmatched Singular task boundary: " + line);
+        active.reset();
+      } else {
+        throw std::runtime_error("unknown Singular task boundary: " + line);
+      }
+    } else if (active) {
+      outputs[*active] += line;
+      outputs[*active] += '\n';
+    }
+  }
+  if (active) throw std::runtime_error("unclosed Singular task: " + task_marker(tasks[*active], "BEGIN"));
+  for (std::size_t i = 0; i < tasks.size(); ++i)
+    if (!seen[i]) throw std::runtime_error("missing Singular task: " + task_marker(tasks[i], "BEGIN"));
+  return outputs;
+}
+
+std::vector<ProbeResult> calculate_probe_batch(const MasterFinderConfig& config,
+    const std::vector<std::uint32_t>& sectors, const std::vector<ProbeTask>& tasks)
+{
+  std::string script(masters::detail::kIsolatedSymmetryBasisProcedure);
+  script += masters::detail::kNonisolatedSingularProcedures;
+  for (std::size_t probe = 0; probe < kProbeCharacteristics.size(); ++probe)
+    script += preferred_monomial_procedures(probe);
+  for (const auto& task : tasks) {
+    const auto sector = sectors[task.sector_index];
+    const auto active = integral_layout::active_variables(sector, config.propagator_count);
+    script += std::format("print(\"{}\");\nproc fr_master_task()\n{{\n",
+                          task_marker(task, "BEGIN"));
+    script += probe_script(config, sector, active, task.probe);
+    // The procedure also scopes ring-independent ints and lists.
+    script += std::format("kill fr_master_basis_{};\nkill fr_master_full_{};\n"
+                          "}}\nfr_master_task();\nkill fr_master_task;\nprint(\"{}\");\n",
+                          task.probe, task.probe, task_marker(task, "END"));
+  }
+  script += "exit;\n";
+  const auto completed = masters::detail::run_singular_process(config.singular_path, script);
+  if (!WIFEXITED(completed.status) || WEXITSTATUS(completed.status) != 0)
+    throw std::runtime_error(std::format("Singular failed (status {}): {}", completed.status,
+                                         trim(completed.stderr_text)));
+  const auto outputs = split_batch_output(completed.stdout_text, tasks);
+  std::vector<ProbeResult> results;
+  results.reserve(tasks.size());
+  for (std::size_t i = 0; i < tasks.size(); ++i) {
+    const auto& task = tasks[i];
+    const auto sector = sectors[task.sector_index];
+    try {
+      results.push_back(parse_probe_result(outputs[i], task.probe,
+          static_cast<std::size_t>(std::popcount(sector)), sector_symmetry(config, sector) != nullptr));
+    } catch (const std::exception& error) {
+      throw std::runtime_error(std::format("failed to parse Singular probe {} in sector {}: {}; stderr: {}; stdout: {}",
+          task.probe + 1, sector_notation(sector, config), error.what(), trim(completed.stderr_text),
+          outputs[i].substr(0, 2048)));
+    }
+  }
+  return results;
+}
+
+std::vector<std::uint32_t> representative_sectors(const MasterFinderConfig& config,
+                                                  std::vector<std::uint32_t> sectors)
+{
   if (sectors.size() != config.symmetry->nonzero_sector_count) {
     throw std::runtime_error(
         "stored symmetry analysis disagrees with non-zero sector enumeration");
@@ -659,29 +656,80 @@ std::vector<SectorBasis>
 calculate_all_sector_bases(const MasterFinderConfig& config,
                            const std::vector<std::uint32_t>& sectors)
 {
-  std::vector<std::optional<SectorBasis>> slots(sectors.size());
-  const std::size_t worker_count =
-      std::min<std::size_t>(config.threads, sectors.size());
+  std::vector<std::array<std::optional<ProbeResult>, 2>> slots(sectors.size());
+  const std::size_t worker_count = std::min<std::size_t>(config.threads, 2 * sectors.size());
+  const auto task_batches =
+      masters::detail::singular_probe_batches(sectors, config.threads, false);
+  std::unordered_map<std::uint32_t, std::size_t> indices;
+  for (std::size_t i = 0; i < sectors.size(); ++i)
+    indices.emplace(sectors[i], i);
+  std::vector<std::vector<ProbeTask>> batches;
+  batches.reserve(task_batches.size());
+  for (const auto& tasks : task_batches) {
+    auto& batch = batches.emplace_back();
+    for (const auto& task : tasks)
+      batch.push_back({indices.at(task.sector), task.probe});
+  }
   core::ParallelForExecutor executor(worker_count);
-  executor.run(sectors.size(), [&](std::size_t index, std::size_t) {
-    slots[index] = calculate_sector_basis(config, sectors[index]);
+  executor.run(batches.size(), [&](std::size_t index, std::size_t) {
+    const auto& tasks = batches[index];
+    try {
+      auto results = calculate_probe_batch(config, sectors, tasks);
+      for (std::size_t i = 0; i < tasks.size(); ++i)
+        slots[tasks[i].sector_index][tasks[i].probe] = std::move(results[i]);
+    } catch (const std::exception& error) {
+      std::string context;
+      for (const auto& task : tasks) {
+        if (!context.empty()) context += ", ";
+        context += std::format("{}:probe{}", sector_notation(sectors[task.sector_index], config),
+                               task.probe + 1);
+      }
+      throw std::runtime_error(std::format("Singular batch {} [{}]: {}", index, context, error.what()));
+    }
   });
   std::vector<SectorBasis> result;
   result.reserve(slots.size());
-  for (auto& slot : slots) {
-    if (!slot) {
-      throw std::runtime_error("master finder worker lost a sector result");
-    }
-    result.push_back(std::move(*slot));
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    auto& probes = slots[i];
+    if (!probes[0] || !probes[1]) throw std::runtime_error("master finder worker lost a probe result");
+    if (probes[0]->dimension != probes[1]->dimension ||
+        probes[0]->nonisolated != probes[1]->nonisolated ||
+        probes[0]->monomials != probes[1]->monomials ||
+        probes[0]->symmetry_monomials != probes[1]->symmetry_monomials)
+      throw std::runtime_error(std::format("finite-field probes disagree in sector {}",
+                                           sector_notation(sectors[i], config)));
+    result.push_back({sectors[i], probes[0]->dimension, probes[0]->nonisolated, std::move(probes[0]->monomials),
+                      std::move(probes[0]->symmetry_monomials)});
   }
   return result;
 }
 
+void require_complete_dimensions(const MasterFinderConfig& config,
+                                 const masters::detail::MasterSectorAnalysis& analysis)
+{
+  using masters::detail::DimensionComparisonStatus;
+  if (!analysis.regulated)
+    throw std::logic_error("isolated analysis lacks regulated counts");
+  std::string errors;
+  const auto append = [&](std::string error) {
+    if (!errors.empty()) errors += '\n';
+    errors += error;
+  };
+  // An unresolved sector blocks selection even if other sectors have a mismatch.
+  for (const auto& row : analysis.comparisons)
+    if (row.status == DimensionComparisonStatus::Unresolved)
+      append(std::format("regulated dimension check failed: sector={}, indices={}: {}",
+                         row.sector, sector_notation(row.sector, config), row.detail));
+  if (!analysis.regulated->complete && errors.empty())
+    append("regulated dimension check failed: incomplete count");
+  if (!errors.empty()) throw std::runtime_error(errors);
+}
+
 } // namespace
 
-namespace masters {
+namespace masters::detail {
 
-MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
+MasterSectorAnalysis analyze_master_sectors(const MasterFinderConfig& config)
 {
   if (!config.symmetry) {
     throw std::runtime_error("master finder requires a completed symmetry analysis");
@@ -693,32 +741,85 @@ MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
     throw std::invalid_argument("Singular executable path must be non-empty");
   }
 
-  const auto sectors = representative_sectors(config);
-  auto sector_bases = calculate_all_sector_bases(config, sectors);
+  MasterSectorAnalysis analysis;
+  analysis.nonzero_sectors = SectorUtils(config).enumerate_nonzero_sectors();
+  const auto sectors = representative_sectors(config, analysis.nonzero_sectors);
+  analysis.critical = calculate_all_sector_bases(config, sectors);
+  analysis.needs_global_selection =
+      std::ranges::any_of(analysis.critical, &SectorBasis::nonisolated);
+  if (!analysis.needs_global_selection) {
+    analysis.regulated = sector_count::count_sectors(
+        config, sector_count::Method::Regulated, analysis.nonzero_sectors);
+    analysis.comparisons =
+        compare_sector_dimensions(config, analysis.critical, *analysis.regulated);
+  }
+  if (analysis.regulated && analysis.regulated->complete &&
+      std::ranges::none_of(analysis.comparisons, [](const auto& row) {
+        return row.status == DimensionComparisonStatus::Unresolved;
+      }))
+    analysis.needs_global_selection =
+        std::ranges::any_of(analysis.comparisons, [](const auto& row) {
+          return row.status == DimensionComparisonStatus::Mismatch;
+        });
+  return analysis;
+}
 
+MasterCandidateSet assemble_master_candidates(const MasterFinderConfig& config,
+                                              MasterSectorAnalysis analysis)
+{
+  const bool nonisolated =
+      std::ranges::any_of(analysis.critical, &CriticalSectorBasis::nonisolated);
+  std::unordered_set<std::uint32_t> mismatch_sectors;
+  if (!nonisolated) {
+    if (analysis.comparisons.size() != analysis.nonzero_sectors.size())
+      throw std::logic_error("isolated analysis lacks complete dimension comparisons");
+    require_complete_dimensions(config, analysis);
+    std::unordered_map<std::uint32_t, std::uint32_t> representatives;
+    for (const auto& group : config.symmetry->sector_classes)
+      for (const auto& relation : group.relations)
+        representatives.emplace(relation.target_sector, group.representative);
+    for (const auto& row : analysis.comparisons) {
+      if (row.status != DimensionComparisonStatus::Mismatch) continue;
+      const auto found = representatives.find(row.sector);
+      mismatch_sectors.insert(found == representatives.end() ? row.sector
+                                                             : found->second);
+    }
+  }
+  const bool needs_global_selection = nonisolated || !mismatch_sectors.empty();
+  if (analysis.needs_global_selection != needs_global_selection)
+    throw std::logic_error("master analysis route disagrees with critical "
+                           "classification or dimension comparison");
+  auto& sector_bases = analysis.critical;
   MasterCandidateSet result;
-  const bool needs_global_selection =
-      std::ranges::any_of(sector_bases, &SectorBasis::nonisolated);
   result.mode = needs_global_selection ? MasterCandidateMode::GlobalSelection
                                        : MasterCandidateMode::FinalBasis;
   for (auto& sector_basis : sector_bases) {
     const bool has_no_local_candidate = sector_basis.monomials.empty();
-    if (sector_basis.nonisolated ||
+    const bool mismatched = mismatch_sectors.contains(sector_basis.sector);
+    if (sector_basis.nonisolated || mismatched ||
         (needs_global_selection && has_no_local_candidate)) {
       result.relation_source_sectors.push_back(sector_basis.sector);
     }
-    if (needs_global_selection) {
-      // A local kbase is only a hint in the presence of positive-dimensional
-      // source sectors.  Make every normal corner and one-dot representative
-      // available to the global quotient-rank test; the elimination, not the
-      // Singular count, decides which of them survive as masters.
+    if (nonisolated || mismatched) {
+      // Expand the pool when critical data alone cannot determine the basis.
+      // The global relation rank decides which actual integrals survive.
       const std::size_t variable_count =
           static_cast<std::size_t>(std::popcount(sector_basis.sector));
       sector_basis.monomials.emplace_back(variable_count, 0);
-      for (std::size_t variable = 0; variable < variable_count; ++variable) {
-        std::vector<int> dot(variable_count, 0);
-        dot[variable] = 1;
-        sector_basis.monomials.push_back(std::move(dot));
+      // Nonisolated families retain the historical corner-only border. For
+      // isolated mismatches, add one dot to each original candidate and corner.
+      // Freeze the seed count: new candidates must never seed another layer.
+      const auto seed_count =
+          mismatched ? sector_basis.monomials.size() : std::size_t{1};
+      for (std::size_t seed = 0; seed < seed_count; ++seed) {
+        for (std::size_t variable = 0; variable < variable_count; ++variable) {
+          auto dot = mismatched ? sector_basis.monomials[seed]
+                                : std::vector<int>(variable_count, 0);
+          if (dot.at(variable) >= std::numeric_limits<int>::max() - 1)
+            throw std::overflow_error("master dot candidate index exceeds int");
+          ++dot[variable];
+          sector_basis.monomials.push_back(std::move(dot));
+        }
       }
       std::ranges::sort(sector_basis.monomials, [](const auto& lhs, const auto& rhs) {
         return masters::detail::monomial_preferred(lhs, rhs);
@@ -743,6 +844,15 @@ MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
   }
   masters::detail::canonical_sort_master_integrals(config, result.integrals);
   return result;
+}
+
+} // namespace masters::detail
+
+namespace masters {
+MasterCandidateSet find_master_candidates(const MasterFinderConfig& config)
+{
+  return detail::assemble_master_candidates(config,
+                                            detail::analyze_master_sectors(config));
 }
 
 std::vector<Integral> find_master_integrals(const MasterFinderConfig& config)

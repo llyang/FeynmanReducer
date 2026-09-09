@@ -27,6 +27,7 @@ public:
   void info(std::string_view message);
   void summary(std::string_view message);
   void error(std::string_view message);
+  void warning(std::string_view message);
   void complete(std::string_view label);
   [[nodiscard]] std::chrono::system_clock::time_point started_at() const noexcept;
 

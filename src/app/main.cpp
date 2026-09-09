@@ -119,7 +119,7 @@ int main(int argc, char** argv)
         timing.run_stage(std::format("Find master basis (workers={})", config.threads),
                          [&] { return masters::find_master_candidates(config); });
     if (!master_candidates.requires_global_selection()) {
-      config.basis = master_candidates.integrals;
+      config.basis = std::move(master_candidates.integrals);
       timing.summary(std::format("Master basis: integrals={}, source=isolated",
                                  config.basis.size()));
     } else {
@@ -139,6 +139,9 @@ int main(int argc, char** argv)
         break;
       case ReductionProgressEvent::failed:
         timing.stage_failed(label);
+        break;
+      case ReductionProgressEvent::warning:
+        timing.warning(label);
         break;
       case ReductionProgressEvent::info:
         timing.info(label);

@@ -26,7 +26,7 @@ std::size_t find_integral(std::span<const Integral> values, const Integral& inte
 DSeparatingReduction::DSeparatingReduction(PreparedDSeparatingBasisSearch prepared,
                                            std::vector<Integral> original_targets)
     : prepared_(std::move(prepared)), original_targets_(std::move(original_targets)),
-      final_output_support_(prepared_.final_output_support)
+      final_output_support_(std::move(prepared_.final_output_support))
 {
   if (!prepared_.oracle || prepared_.report.selected_basis.empty())
     throw std::invalid_argument("D-separating reduction is not prepared");
@@ -54,7 +54,7 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
     std::span<const std::uint32_t> relation_source_sectors,
     ReductionProgressCallback progress, ReductionOptions options)
 {
-  const auto original_targets = output_config.targets;
+  auto original_targets = output_config.targets;
   DSeparatingBasisSearchOptions search_options;
   auto search_progress = [&](std::string_view message) {
     if (progress)
@@ -105,7 +105,7 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
              ReductionProgressEvent::info);
   }
   auto result = std::unique_ptr<DSeparatingReduction>(
-      new DSeparatingReduction(std::move(prepared), original_targets));
+      new DSeparatingReduction(std::move(prepared), std::move(original_targets)));
   output_config.basis.swap(selected_basis);
   return result;
 }
@@ -191,6 +191,7 @@ DSeparatingReduction::selected_plan(std::span<const std::uint32_t> active_output
   if (current && std::ranges::equal(current->active_outputs, active_outputs))
     return current;
 
+  current.reset();
   std::lock_guard lock(selection_plan_mutex_);
   current = selected_selection_plan_.load(std::memory_order_relaxed);
   if (current && std::ranges::equal(current->active_outputs, active_outputs))

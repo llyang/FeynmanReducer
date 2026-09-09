@@ -8,6 +8,7 @@ enum class ReductionProgressEvent {
   completed,
   failed,
   info,
+  warning,
 };
 
 using ReductionProgressCallback =

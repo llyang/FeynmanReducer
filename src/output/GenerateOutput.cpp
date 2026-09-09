@@ -33,6 +33,11 @@ void write_mathematica_result(const ReductionResult& result,
                               const std::filesystem::path& output)
 {
   validate_result(result);
+  std::vector<std::string> basis_labels;
+  basis_labels.reserve(result.basis.size());
+  for (const auto& integral : result.basis)
+    basis_labels.push_back(
+        format_mathematica_integral(result.integral_header, integral.indices));
   core::atomic_file::write(output, "Mathematica result", [&](std::ostream& stream) {
     std::size_t flat = 0;
     stream << "{\n";
@@ -47,7 +52,7 @@ void write_mathematica_result(const ReductionResult& result,
              << " -> ";
       bool wrote_term = false;
       for (std::size_t index = 0; index < result.basis.size(); ++index) {
-        const FlintRational& original = result.coefficients.at(flat++);
+        const FactorizedRational& original = result.coefficients.at(flat++);
         if (original.is_zero()) {
           continue;
         }
@@ -55,9 +60,7 @@ void write_mathematica_result(const ReductionResult& result,
           stream << " + ";
         }
         wrote_term = true;
-        stream << '(' << original.to_string() << ")*"
-               << format_mathematica_integral(result.integral_header,
-                                              result.basis[index].indices);
+        stream << '(' << original.to_string() << ")*" << basis_labels[index];
       }
       if (!wrote_term) {
         stream << '0';

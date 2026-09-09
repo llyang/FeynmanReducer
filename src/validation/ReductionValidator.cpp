@@ -4,8 +4,10 @@
 
 #include <flint/fmpz_mpoly.h>
 #include <flint/fmpz_mpoly_q.h>
+#include <zlib.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <filesystem>
@@ -61,6 +63,41 @@ struct ParsedReduction {
 
 std::string read_file(const std::filesystem::path& path)
 {
+  if (path.extension() == ".gz") {
+    std::unique_ptr<gzFile_s, decltype(&gzclose)> input(gzopen(path.c_str(), "rb"),
+                                                        &gzclose);
+    if (!input) {
+      throw std::runtime_error("cannot open validation input: " + path.string());
+    }
+    auto fail = [&](const std::string& reason) {
+      throw std::runtime_error("cannot decompress validation input: " + path.string() +
+                               ": " + reason);
+    };
+    // gzread normally accepts plain text transparently; a .gz input must
+    // actually have a gzip header, including for an empty input file.
+    if (gzdirect(input.get())) {
+      fail("not a gzip stream");
+    }
+    std::array<char, 64 * 1024> buffer;
+    std::string text;
+    for (;;) {
+      const int count = gzread(input.get(), buffer.data(), buffer.size());
+      int code = Z_OK;
+      const char* error = gzerror(input.get(), &code);
+      // A truncated stream can return partial data while setting Z_BUF_ERROR.
+      if (count < 0 || code != Z_OK) {
+        fail(error ? error : "gzip read failed");
+      }
+      if (count == 0) {
+        break;
+      }
+      text.append(buffer.data(), static_cast<std::size_t>(count));
+    }
+    if (gzclose(input.release()) != Z_OK) {
+      fail("gzip close failed");
+    }
+    return text;
+  }
   std::ifstream input(path);
   if (!input) {
     throw std::runtime_error("cannot open validation input: " + path.string());

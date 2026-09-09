@@ -49,6 +49,9 @@ struct ReductionKernelStatistics {
   std::size_t jet_row_count = 0;
   std::size_t jet_relation_count = 0;
   std::size_t jet_group_count = 0;
+  std::size_t g_layer_activation_rounds = 0;
+  std::size_t g_layer_activated_groups = 0;
+  std::size_t g_layer_activated_points = 0;
   std::size_t ansatz_expansion_rounds = 0;
   std::size_t ansatz_expanded_groups = 0;
   std::size_t ansatz_expanded_points = 0;

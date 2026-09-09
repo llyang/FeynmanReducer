@@ -95,6 +95,10 @@ struct TopologyConfig {
   // extended symmetry report and top-LP target projection; denominator
   // equations keep using the compact fields above.
   ExtendedLpData extended_lp;
+  // Exact certificate after numeric substitutions, for denominator and extended F.
+  bool scale_homogeneous = false;
+  std::string scale_homogeneity_reason = "homogeneity has not been checked";
+  std::vector<std::string> reconstruction_scale_candidates;
 };
 
 struct MasterFinderConfig : TopologyConfig {
@@ -109,4 +113,5 @@ struct Config : MasterFinderConfig {
   bool check_master_independence = false;
   bool factor_scan = false;
   bool shift_scan = false;
+  std::string reconstruction_scale = "auto";
 };

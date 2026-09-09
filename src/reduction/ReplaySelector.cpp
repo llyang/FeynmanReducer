@@ -99,6 +99,9 @@ BlackBoxFeynman::selected_replay_variant(
     return current;
   }
 
+  // A cache miss must not keep an obsolete variant alive while waiting for
+  // another builder. Reload the published variant after acquiring the lock.
+  current.reset();
   std::lock_guard lock(replay_variant_mutex);
   current = replay_variant.load(std::memory_order_relaxed);
   if (current != nullptr &&

@@ -3,6 +3,7 @@
 #include "masters/detail/GlobalBasisSelector.hpp"
 #include "reduction/EliminationTape.hpp"
 #include "reduction/FiniteFieldArithmetic.hpp"
+#include "reduction/KernelErrors.hpp"
 #include "reduction/MasterIndependence.hpp"
 #include "reduction/ParameterEvaluation.hpp"
 #include "topology/IntegralLayout.hpp"
@@ -494,15 +495,14 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
       std::vector<std::vector<Monomial>>().swap(candidate->top_lp_target_plan.columns);
     } catch (const reduction::detail::MasterBasisDependenceError&) {
       throw;
+    } catch (const reduction::detail::SymmetryEquivalentBasisError&) {
+      throw;
     } catch (const AnsatzClosureError&) {
       throw;
     } catch (const std::logic_error&) {
       throw;
     } catch (const std::exception& error) {
       last_error = error.what();
-      if (last_error.find("symmetry-equivalent") != std::string::npos) {
-        throw;
-      }
       if (progress) {
         progress(std::format("Kernel planning rejected anchor: {}", last_error),
                  ReductionProgressEvent::info);
@@ -547,11 +547,15 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
           sample.reference_outputs.push_back(value.n);
         validation_samples.push_back(std::move(sample));
         return true;
+      } catch (const reduction::detail::ClosureResidualError& error) {
+        selection_invalid = true;
+        last_error = std::format(
+            "kernel reference validation rejected point: kind=closure-residual, "
+            "prime_index={}, prime={}, point={}, reason={}",
+            prime_index + 1, prime, point, error.what());
+        return false;
       } catch (const std::runtime_error& error) {
         const std::string message = error.what();
-        if (message.find("closure validation residual") != std::string::npos) {
-          selection_invalid = true;
-        }
         last_error = std::format(
             "kernel reference validation rejected point: kind={}, prime_index={}, "
             "prime={}, point={}, reason={}",
@@ -928,7 +932,7 @@ BlackBoxFeynman::evaluate_reference(const EvaluatedCoeffs<firefly::FFInt>& coeff
     for (std::size_t projection = 0; projection < kResidualProjectionCount;
          ++projection) {
       if (closure_residual[row * kResidualProjectionCount + projection] != T(0)) {
-        throw std::runtime_error(std::format(
+        throw reduction::detail::ClosureResidualError(std::format(
             "kernel closure validation residual is nonzero at row={}, projection={}",
             row, projection));
       }

@@ -187,10 +187,14 @@ namespace firefly {
      *  Enables only the scan for factors and returns afterwards
      */
     void stop_after_factor_scan();
+    // Post-factor degrees in the original black-box variable order, before sorting.
+    const std::vector<uint32_t>& factor_scan_degrees() const { return original_factor_scan_degrees; }
+    uint64_t probe_count() const { return total_iterations; }
 
     enum verbosity_levels {SILENT, IMPORTANT, CHATTY};
     enum RatReconst_status {RECONSTRUCTING, DONE, DELETE};
   private:
+    std::vector<uint32_t> original_factor_scan_degrees;
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     std::chrono::high_resolution_clock::time_point prime_start = std::chrono::high_resolution_clock::now();
     std::chrono::high_resolution_clock::time_point last_print_time = std::chrono::high_resolution_clock::now();
@@ -1845,6 +1849,7 @@ namespace firefly {
 
     std::vector<std::string> vars (n);
 
+    original_factor_scan_degrees = max_degs;
     // Reorder variables with regards to their maximum degree
     std::vector<uint32_t> indices (n);
     std::iota(indices.begin(), indices.end(), 0);

@@ -32,6 +32,14 @@ struct ProjectedSeedExpansion {
 
 [[nodiscard]] unsigned projected_g_shift(std::span<const int> powers);
 
+// Activate missing seed groups at the residual or predecessor G layer. Existing groups
+// are never enlarged here; dot frontiers have their own independent budget.
+[[nodiscard]] ProjectedSeedExpansion activate_projected_seed_groups(
+    std::span<const std::vector<int>> envelope,
+    std::span<const ProjectedSeedGroup> residual_groups,
+    const TopLpTargetPlan& targets, const EquationGenerator& equations,
+    const SectorUtils& sectors, const SymmetryCanonicalizer& canonicalizer);
+
 [[nodiscard]] ProjectedSeedExpansion expand_projected_seed_groups(
     std::span<const std::vector<int>> envelope,
     std::span<const ProjectedSeedGroup> requested_groups,

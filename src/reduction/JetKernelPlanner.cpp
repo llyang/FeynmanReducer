@@ -1,4 +1,5 @@
 #include "reduction/BlackBoxFeynman.hpp"
+#include "reduction/KernelErrors.hpp"
 
 #include "reduction/DirectSeedExpansion.hpp"
 #include "reduction/JetEquationGenerator.hpp"
@@ -190,7 +191,7 @@ void BlackBoxFeynman::plan_direct_numerator_kernel(
     for (const auto& integral : basis) {
       auto canonical = symmetry.canonicalize(integral_powers(cfg, integral));
       if (!representatives.insert(std::move(canonical)).second)
-        throw std::runtime_error("basis contains symmetry-equivalent integrals");
+        throw reduction::detail::SymmetryEquivalentBasisError();
     }
   };
   check_basis_representatives(cfg.basis);

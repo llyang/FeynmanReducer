@@ -71,6 +71,11 @@ void RunTiming::info(std::string_view message)
   emit(*info_output_, "INFO", message, now, std::nullopt);
 }
 
+void RunTiming::warning(std::string_view message)
+{
+  emit(error_, "WARN", message, steady_now_(), std::nullopt);
+}
+
 void RunTiming::summary(std::string_view message)
 {
   const auto now = steady_now_();

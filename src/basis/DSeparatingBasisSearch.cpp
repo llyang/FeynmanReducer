@@ -1292,6 +1292,9 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
     case ReductionProgressEvent::failed:
       event_name = "failed";
       break;
+    case ReductionProgressEvent::warning:
+      event_name = "warning";
+      break;
     case ReductionProgressEvent::info:
       break;
     }
