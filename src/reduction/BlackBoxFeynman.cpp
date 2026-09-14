@@ -150,7 +150,8 @@ void require_same_results(const std::vector<firefly::FFInt>& reference,
 
 } // namespace
 
-BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options)
+BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
+                                 const reduction::detail::RecompactSource* source)
     : cfg(config), numerator_strategy(options.numerator_strategy),
       replay_orientation_preference(options.replay_orientation),
       ansatz_dot_ordering(options.ansatz_dot_ordering),
@@ -176,8 +177,23 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options)
   // the single-layer projected topology for nonnegative target sets.
   if (!has_negative_targets && !options.force_direct_positive_targets)
     numerator_strategy = NumeratorReductionStrategy::Projected;
-  if (numerator_strategy == NumeratorReductionStrategy::Projected)
+  if (uses_recompact_source(options.d_separating_kernel) &&
+      numerator_strategy != NumeratorReductionStrategy::Projected)
+    throw std::invalid_argument(
+        "final-basis recompaction only supports projected kernels");
+  if (source) {
+    top_lp_target_plan.expressions = source->expressions;
+    top_lp_target_plan.maximum_g_shift = source->maximum_g_shift;
+  } else if (numerator_strategy == NumeratorReductionStrategy::Projected) {
     top_lp_target_plan = compile_top_lp_target_plan(cfg);
+    if (uses_recompact_source(options.d_separating_kernel)) {
+      recompact_source_ = std::make_unique<reduction::detail::RecompactSource>();
+      recompact_source_->capture_provisional =
+          uses_provisional_checkpoint(options.d_separating_kernel);
+      recompact_source_->expressions = top_lp_target_plan.expressions;
+      recompact_source_->maximum_g_shift = top_lp_target_plan.maximum_g_shift;
+    }
+  }
   kernel_statistics_.numerator_strategy =
       numerator_strategy == NumeratorReductionStrategy::Direct ? "direct" : "projected";
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> product_ids;
@@ -470,10 +486,18 @@ BlackBoxFeynman::prepare(Config& config, const masters::MasterCandidateSet& cand
 
 std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
     const Config& config, const ReductionProgressCallback& progress,
-    ReductionOptions options, std::span<const std::uint32_t> relation_source_sectors)
+    ReductionOptions options, std::span<const std::uint32_t> relation_source_sectors,
+    const reduction::detail::RecompactSource* source)
 {
   const auto primes = reduction::detail::usable_firefly_primes(config, 2);
 
+  const bool have_checkpoint =
+      source && source->checkpoint &&
+      uses_provisional_checkpoint(options.d_separating_kernel);
+  if (have_checkpoint &&
+      source->checkpoint->parameters.size() != config.parameters.size())
+    throw std::logic_error("checkpoint parameter shape mismatch");
+  const bool reuse_first = have_checkpoint && source->checkpoint->prime == primes[0];
   std::unique_ptr<BlackBoxFeynman> prepared;
   std::size_t accepted_anchor_attempt = 0;
   std::array<std::size_t, 2> accepted_validation_points{};
@@ -486,12 +510,28 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
                ReductionProgressEvent::info);
     }
     auto candidate =
-        std::unique_ptr<BlackBoxFeynman>(new BlackBoxFeynman(config, options));
-    const auto values =
-        make_anchor_values(config.parameters.size(), primes[0], anchor_attempt);
+        std::unique_ptr<BlackBoxFeynman>(new BlackBoxFeynman(config, options, source));
+    const bool reuse_checkpoint = reuse_first && anchor_attempt == 0;
+    auto values = make_anchor_values(
+        config.parameters.size(), primes[0],
+        reuse_first && anchor_attempt > 0 ? anchor_attempt - 1 : anchor_attempt);
+    if (reuse_checkpoint) {
+      values.clear();
+      for (auto residue : source->checkpoint->parameters)
+        values.emplace_back(residue);
+    } else if (have_checkpoint && progress) {
+      progress("Provisional reuse fallback: full retained relation planning",
+               ReductionProgressEvent::info);
+    }
     try {
       const auto coeffs = candidate->evaluate_coefficients(values);
-      candidate->plan_kernel(coeffs, values, progress, relation_source_sectors);
+      if (source)
+        candidate->plan_from_source(*source, coeffs, values, progress,
+                                    reuse_checkpoint,
+                                    options.d_separating_kernel ==
+                                        DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis);
+      else
+        candidate->plan_kernel(coeffs, values, progress, relation_source_sectors);
       std::vector<std::vector<Monomial>>().swap(candidate->top_lp_target_plan.columns);
     } catch (const reduction::detail::MasterBasisDependenceError&) {
       throw;
@@ -952,12 +992,154 @@ BlackBoxFeynman::evaluate_reference(const EvaluatedCoeffs<firefly::FFInt>& coeff
   return result;
 }
 
+std::vector<std::uint64_t> BlackBoxFeynman::target_replay_loader_layout() const
+{
+  std::vector<std::uint64_t> data;
+  const auto loads = [&](const auto& loader, const auto& weights) {
+    data.push_back(loader.size());
+    data.push_back(weights.size());
+    for (const auto& x : loader) {
+      data.push_back(x.flat_idx);
+      if constexpr (requires { x.bb_idx; }) {
+        data.push_back(x.bb_idx);
+        data.push_back(x.group_size);
+      } else
+        data.push_back(x.expression);
+    }
+    for (auto w : weights)
+      data.push_back(static_cast<std::uint64_t>(w));
+  };
+  // compile_loaders only updates these load layouts/weights once its source
+  // skeletons and coefficient pool are initialized. All other kernel structure
+  // is immutable during this operation; retain/configure still clear caches.
+  data.push_back(coefficient_pool_initialized);
+  data.push_back(replay_outputs.size());
+  data.push_back(matrix_workspace_size);
+  data.push_back(rhs_workspace_size);
+  data.push_back(skeleton_B.size());
+  data.push_back(top_lp_rhs_skeleton.size());
+  loads(loader_B, loader_B_weights);
+  loads(top_lp_loader_B, top_lp_loader_B_weights);
+  data.push_back(replay_blocks.size());
+  for (const auto& b : replay_blocks) {
+    data.push_back(b.row_begin);
+    data.push_back(b.dimension);
+    data.push_back(b.matrix_workspace_size);
+    data.push_back(b.skeleton_M.size());
+    data.push_back(b.skeleton_couplings.size());
+    data.push_back(b.top_lp_skeleton_M.size());
+    data.push_back(b.top_lp_skeleton_couplings.size());
+    loads(b.loader_M, b.loader_M_weights);
+    loads(b.top_lp_loader_M, b.top_lp_loader_M_weights);
+    loads(b.loader_couplings, b.loader_coupling_weights);
+    loads(b.top_lp_loader_couplings, b.top_lp_loader_coupling_weights);
+  }
+  data.push_back(coefficient_terms.size());
+  for (const auto& x : coefficient_terms) {
+    data.push_back(x.bb_idx);
+    data.push_back(static_cast<std::uint64_t>(x.weight));
+  }
+  return data;
+}
+
+std::shared_ptr<const BlackBoxFeynman::ReplayVariant>
+BlackBoxFeynman::refresh_target_replay_variant(const ReplayVariant& old) const
+{
+  if (old.selected_master || !old.master_columns.empty()) return {};
+  auto result = std::make_shared<ReplayVariant>();
+  result->active_outputs = old.active_outputs;
+  result->coefficients = old.coefficients;
+  result->outputs = old.outputs;
+  result->matrix_workspace_size = old.matrix_workspace_size;
+  result->rhs_workspace_size = old.rhs_workspace_size;
+  for (std::size_t i = 0; i < old.active_outputs.size(); ++i) {
+    if (old.active_outputs[i] >= replay_outputs.size()) return {};
+    const auto& a = old.outputs.at(i);
+    const auto& b = replay_outputs[old.active_outputs[i]];
+    if (a.target != b.target || a.basis != b.basis) return {};
+  }
+  const auto prime = firefly::FFInt::p;
+  const finite_field::MontgomeryArithmetic arithmetic(prime);
+  const auto refresh = [&](auto& dest, const auto& source, const auto& weights) {
+    if (source.size() != weights.size())
+      throw std::logic_error("retained target replay weight shape mismatch");
+    dest = source;
+    for (std::size_t i = 0; i < dest.size(); ++i) {
+      const auto w = weights[i];
+      const auto mag = (w < 0 ? static_cast<std::uint64_t>(-(w + 1)) + 1
+                              : static_cast<std::uint64_t>(w)) %
+                       prime;
+      dest[i].w_ff = arithmetic.encode(w >= 0 || mag == 0 ? mag : prime - mag);
+    }
+  };
+  result->loader_B_weights = old.loader_B_weights;
+  result->top_lp_loader_B_weights = old.top_lp_loader_B_weights;
+  refresh(result->loader_B, old.loader_B, old.loader_B_weights);
+  refresh(result->top_lp_loader_B, old.top_lp_loader_B, old.top_lp_loader_B_weights);
+  result->pooled_loader_B = old.pooled_loader_B;
+  result->blocks.reserve(old.blocks.size());
+  for (const auto& b : old.blocks) {
+    if (b.master) return {};
+    BlockReplayProgram n;
+    n.row_begin = b.row_begin;
+    n.dimension = b.dimension;
+    n.matrix_workspace_size = b.matrix_workspace_size;
+    n.tape = b.tape;
+    n.compiled_tape = b.compiled_tape;
+    n.couplings = b.couplings;
+    n.coupling_targets = b.coupling_targets;
+    n.coupling_operations = b.coupling_operations;
+    n.pooled_loader_M = b.pooled_loader_M;
+    n.pooled_loader_couplings = b.pooled_loader_couplings;
+    n.loader_M_weights = b.loader_M_weights;
+    n.top_lp_loader_M_weights = b.top_lp_loader_M_weights;
+    n.loader_coupling_weights = b.loader_coupling_weights;
+    n.top_lp_loader_coupling_weights = b.top_lp_loader_coupling_weights;
+    refresh(n.loader_M, b.loader_M, b.loader_M_weights);
+    refresh(n.top_lp_loader_M, b.top_lp_loader_M, b.top_lp_loader_M_weights);
+    refresh(n.loader_couplings, b.loader_couplings, b.loader_coupling_weights);
+    refresh(n.top_lp_loader_couplings, b.top_lp_loader_couplings,
+            b.top_lp_loader_coupling_weights);
+    result->blocks.push_back(std::move(n));
+  }
+  return result;
+}
+
 void BlackBoxFeynman::prime_changed()
 {
   std::lock_guard lock(replay_variant_mutex);
+  const bool enabled = cfg.basis_selection == BasisSelectionPolicy::DSeparating &&
+                       replay_orientation == ReplayOrientation::Target &&
+                       coefficient_pool_initialized;
+  const auto layout =
+      enabled ? target_replay_loader_layout() : std::vector<std::uint64_t>{};
+  const auto old_variant = replay_variant.load(std::memory_order_acquire);
+  const auto old_cache = replay_cache.load(std::memory_order_acquire);
+  // Unpublish old numeric plans before refreshing. In-flight snapshots stay immutable.
+  replay_variant.store(nullptr, std::memory_order_release);
+  replay_cache.store(nullptr, std::memory_order_release);
   compile_loaders(firefly::FFInt::p);
   selected_master_structure_cache.clear();
-  replay_variant.store(nullptr, std::memory_order_release);
+  if (!enabled || layout != target_replay_loader_layout()) return;
+  if (old_variant) {
+    auto next = refresh_target_replay_variant(*old_variant);
+    if (next && replay_variant_bytes(*next) <= replay_cache_budget)
+      replay_variant.store(std::move(next), std::memory_order_release);
+  }
+  if (old_cache) {
+    auto next = std::make_shared<ReplayCache>();
+    for (const auto& entry : old_cache->entries) {
+      auto variant = refresh_target_replay_variant(*entry.variant);
+      if (!variant) continue;
+      const auto bytes = replay_variant_bytes(*variant);
+      if (next->entries.size() < replay_cache_entries &&
+          bytes <= replay_cache_budget - next->bytes) {
+        next->entries.push_back({std::move(variant), bytes});
+        next->bytes += bytes;
+      }
+    }
+    replay_cache.store(std::move(next), std::memory_order_release);
+  }
 }
 
 std::vector<firefly::FFInt>
@@ -976,6 +1158,15 @@ BlackBoxFeynman::eval_selected_compact(const std::vector<firefly::FFInt>& values
   if (active_outputs.empty()) return {};
   if (active_outputs.size() == replay_outputs.size()) return (*this)(values);
 
+  if (rebuild_replay_policy != DSeparatingRebuildReplay::Exact ||
+      master_replay_grouping != MasterReplayGrouping::Exact) {
+    auto grouped = eval_grouped_outputs(values, active_outputs,
+                                        master_replay_grouping ==
+                                            MasterReplayGrouping::MasterColumns);
+    if (!grouped.empty()) return grouped;
+    // Extra algebra dependencies can be singular even when the exact request is
+    // regular. Retry that request at the same point; structural errors propagate.
+  }
   const auto variant = selected_replay_variant(active_outputs);
   const auto coeffs = evaluate_coefficients(values, &variant->coefficients);
   auto selected = execute_replay(coeffs, values, variant.get());

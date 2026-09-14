@@ -34,8 +34,9 @@ struct RationalInterpolationDiagnostics {
   std::string failure;
 };
 
-// Fast exact-delta path. The caller must set firefly::FFInt to field.prime()
-// before entering this function and must not change that global prime while
+// Univariate rational interpolation using FireFly Thiele reconstruction.
+// The caller must set firefly::FFInt to field.prime() before entering this
+// function and must not change that global prime while
 // concurrent interpolations are running. Holdout samples are never fed to the
 // interpolator and are used only for candidate validation.
 [[nodiscard]] std::optional<RationalFunction> interpolate_rational_thiele_monic(
@@ -55,12 +56,3 @@ stable_polynomial_signatures(const PrimeField& field,
                              std::span<const FieldVector> polynomials);
 
 } // namespace basis
-
-namespace quotient {
-using basis::interpolate_rational_fixed_degrees;
-using basis::interpolate_rational_monic;
-using basis::interpolate_rational_thiele_monic;
-using basis::moving_polynomial_degree;
-using basis::RationalInterpolationDiagnostics;
-using basis::stable_polynomial_signatures;
-} // namespace quotient

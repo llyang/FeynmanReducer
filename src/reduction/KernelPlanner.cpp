@@ -489,7 +489,8 @@ void BlackBoxFeynman::plan_kernel_impl(
         indexed_basis_cols, indexed_target_cols, indexed_ansatz_cols, ansatz_metadata,
         row_sectors, polynomial_values, coeffs.top_lp_coefficients, coeffs.minus_half_d,
         row_groups, ordered_groups, effective_dot_ordering, cfg.threads,
-        check_master_independence);
+        check_master_independence,
+        recompact_source_ && recompact_source_->capture_provisional);
     if (check_master_independence && progress)
       progress(std::format(
                    "Master independence check: completion_ms={:.2f}, check_ms={:.2f}",
@@ -535,8 +536,8 @@ void BlackBoxFeynman::plan_kernel_impl(
       if (target_plan != nullptr) {
         const std::vector residuals(residual_groups.begin(), residual_groups.end());
         expansion = reduction::detail::activate_projected_seed_groups(
-            envelope_grid, residuals, *target_plan, planner.equations,
-            planner.sectors, planner.canonicalizer);
+            envelope_grid, residuals, *target_plan, planner.equations, planner.sectors,
+            planner.canonicalizer);
       }
       const bool activated_layer = !expansion.points.empty();
       if (!activated_layer) {
@@ -644,8 +645,7 @@ void BlackBoxFeynman::plan_kernel_impl(
       if (!expanded_groups.contains(group)) ++total_expanded_groups;
     publish_ansatz_statistics(selection, ansatz_metadata, num_rows,
                               generated_column_count, expansion_rounds,
-                              total_expanded_groups,
-                              expanded_points);
+                              total_expanded_groups, expanded_points);
     std::vector<std::size_t> ansatz_order = std::move(selection.ansatz_order);
     std::vector<std::size_t> solution_cols = std::move(selection.solution_columns);
     std::vector<std::size_t> elim_row_map = std::move(selection.elimination_row_map);
@@ -660,8 +660,7 @@ void BlackBoxFeynman::plan_kernel_impl(
                            "cross_group_pivots={}, compression_ratio={:.3f}, "
                            "elapsed_ms={:.2f}",
                            kernel_statistics_.compact_policy, expansion_rounds,
-                           total_expanded_groups,
-                           expanded_points, num_rows,
+                           total_expanded_groups, expanded_points, num_rows,
                            generated_column_count, provisional_dimension,
                            num_ansatz_cols, solution_cols.size(),
                            selection.cross_group_pivots,
@@ -677,7 +676,8 @@ void BlackBoxFeynman::plan_kernel_impl(
                          std::move(row_sectors), std::move(row_groups),
                          std::move(ordered_groups), std::move(target_sectors),
                          std::move(ansatz_order), std::move(solution_cols),
-                         std::move(elim_row_map), std::move(polynomial_values)},
+                         std::move(elim_row_map), std::move(polynomial_values),
+                         std::move(selection.checkpoint)},
                         coeffs, values);
     return;
   }

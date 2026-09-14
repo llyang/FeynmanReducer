@@ -85,18 +85,6 @@ private:
   FieldMatrix inverse_;
 };
 
-using TruncatedFieldSeries = FieldVector;
-
-[[nodiscard]] TruncatedFieldSeries series_add(const PrimeField& field,
-                                              std::span<const std::uint64_t> lhs,
-                                              std::span<const std::uint64_t> rhs);
-[[nodiscard]] TruncatedFieldSeries series_multiply(const PrimeField& field,
-                                                   std::span<const std::uint64_t> lhs,
-                                                   std::span<const std::uint64_t> rhs);
-[[nodiscard]] TruncatedFieldSeries series_scale(const PrimeField& field,
-                                                std::span<const std::uint64_t> series,
-                                                std::uint64_t scalar);
-
 struct RationalFunction {
   FieldVector numerator;
   FieldVector denominator;
@@ -131,10 +119,6 @@ using basis::multiply;
 using basis::PrimeField;
 using basis::RationalFunction;
 using basis::ReusableLinearFactorization;
-using basis::series_add;
-using basis::series_multiply;
-using basis::series_scale;
 using basis::solve_linear_system;
 using basis::taylor_coefficients;
-using basis::TruncatedFieldSeries;
 } // namespace quotient

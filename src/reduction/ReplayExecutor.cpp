@@ -12,7 +12,9 @@
 [[nodiscard]] std::vector<firefly::FFInt>
 BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
                                 const std::vector<firefly::FFInt>& values,
-                                const ReplayVariant* variant) const
+                                const ReplayVariant* variant,
+                                const std::vector<ReplayOutput>* requested_outputs,
+                                const CoefficientSelection* normalization) const
 {
   static thread_local std::vector<std::uint64_t> matrix;
   static thread_local std::vector<std::uint64_t> right_hand_side;
@@ -43,7 +45,9 @@ BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
       use_selected_rhs_loaders ? variant->pooled_loader_B : pooled_loader_B;
   const auto& top_lp_rhs_loader =
       use_selected_rhs_loaders ? variant->top_lp_loader_B : top_lp_loader_B;
-  const auto& outputs = variant == nullptr ? replay_outputs : variant->outputs;
+  const auto& outputs = requested_outputs != nullptr ? *requested_outputs
+                        : variant == nullptr         ? replay_outputs
+                                                     : variant->outputs;
   const auto& coefficient_selection =
       variant == nullptr ? replay_coefficients : variant->coefficients;
   const std::size_t selected_matrix_workspace = variant == nullptr || master
@@ -371,12 +375,14 @@ BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
     target_lp_values.resize(cfg.targets.size());
   if (basis_lp_inverse_values.size() < cfg.basis.size())
     basis_lp_inverse_values.resize(cfg.basis.size());
-  for (const std::uint32_t target : coefficient_selection.targets) {
+  const auto& output_normalization =
+      normalization == nullptr ? coefficient_selection : *normalization;
+  for (const std::uint32_t target : output_normalization.targets) {
     if (target >= coeffs.targets_lp.size())
       throw std::logic_error("replay target normalization is out of range");
     target_lp_values[target] = arithmetic.encode(coeffs.targets_lp[target].n);
   }
-  for (const std::uint32_t basis : coefficient_selection.basis) {
+  for (const std::uint32_t basis : output_normalization.basis) {
     if (basis >= coeffs.basis_lp_inv.size())
       throw std::logic_error("replay basis normalization is out of range");
     basis_lp_inverse_values[basis] = arithmetic.encode(coeffs.basis_lp_inv[basis].n);

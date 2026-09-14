@@ -237,13 +237,6 @@ FieldMatrix invert_square_matrix(const PrimeField& field, FieldMatrix matrix)
   return inverse;
 }
 
-void validate_series_shape(std::span<const std::uint64_t> lhs,
-                           std::span<const std::uint64_t> rhs)
-{
-  if (lhs.empty() || lhs.size() != rhs.size())
-    throw std::invalid_argument("truncated-series shape mismatch");
-}
-
 } // namespace
 
 ReusableLinearFactorization::ReusableLinearFactorization(
@@ -325,43 +318,6 @@ FieldMatrix ReusableLinearFactorization::solve_rows(const FieldMatrix& rows) con
     for (std::size_t vector = 0; vector < rows.size(); ++vector)
       result[vector][coordinate] = column_solutions[coordinate][vector];
   }
-  return result;
-}
-
-TruncatedFieldSeries series_add(const PrimeField& field,
-                                std::span<const std::uint64_t> lhs,
-                                std::span<const std::uint64_t> rhs)
-{
-  validate_series_shape(lhs, rhs);
-  TruncatedFieldSeries result(lhs.size(), 0);
-  for (std::size_t order = 0; order < lhs.size(); ++order)
-    result[order] = field.add(lhs[order], rhs[order]);
-  return result;
-}
-
-TruncatedFieldSeries series_multiply(const PrimeField& field,
-                                     std::span<const std::uint64_t> lhs,
-                                     std::span<const std::uint64_t> rhs)
-{
-  validate_series_shape(lhs, rhs);
-  TruncatedFieldSeries result(lhs.size(), 0);
-  for (std::size_t order = 0; order < lhs.size(); ++order) {
-    for (std::size_t left = 0; left <= order; ++left) {
-      result[order] =
-          field.add(result[order], field.multiply(lhs[left], rhs[order - left]));
-    }
-  }
-  return result;
-}
-
-TruncatedFieldSeries series_scale(const PrimeField& field,
-                                  std::span<const std::uint64_t> series,
-                                  std::uint64_t scalar)
-{
-  if (series.empty()) throw std::invalid_argument("truncated series is empty");
-  TruncatedFieldSeries result(series.size(), 0);
-  for (std::size_t order = 0; order < series.size(); ++order)
-    result[order] = field.multiply(series[order], scalar);
   return result;
 }
 

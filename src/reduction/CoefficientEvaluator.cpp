@@ -9,7 +9,8 @@
 
 EvaluatedCoeffs<firefly::FFInt>
 BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values,
-                                       const CoefficientSelection* selection) const
+                                       const CoefficientSelection* selection,
+                                       const CoefficientSelection* normalization) const
 {
   using T = firefly::FFInt;
 
@@ -134,6 +135,7 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
     }
   }
 
+  if (normalization != nullptr) selection = normalization;
   const std::size_t positive_degree = selection == nullptr
                                           ? maximum_positive_lp_delta
                                           : selection->maximum_positive_lp_delta;

@@ -1,7 +1,9 @@
 #include "NativeFixedBasisOracle.hpp"
 
 #include "LpNormalization.hpp"
+#include "core/ProbeValues.hpp"
 #include "reduction/BlackBoxFeynman.hpp"
+#include "reduction/ParameterEvaluation.hpp"
 
 #include <firefly/FFInt.hpp>
 
@@ -11,6 +13,12 @@
 #include <utility>
 
 namespace basis {
+
+std::unique_ptr<reduction::detail::RecompactSource>
+NativeFixedBasisOracle::take_recompact_source()
+{
+  return black_box_->take_recompact_source();
+}
 
 NativeFixedBasisOracle::NativeFixedBasisOracle(Config config,
                                                bool compute_quotient_normalized)
@@ -100,6 +108,8 @@ std::optional<NativeOracleEvaluation>
 NativeFixedBasisOracle::evaluate(std::uint64_t dimension,
                                  std::span<const std::uint64_t> kinematic_values)
 {
+  if (!all_rows_)
+    throw std::logic_error("full oracle evaluation is unavailable after retention");
   return evaluate_rows(dimension, kinematic_values, *all_rows_);
 }
 
@@ -113,6 +123,13 @@ NativeFixedBasisOracle::prepare_rows(std::span<const std::size_t> target_rows)
       throw std::out_of_range("native oracle target row is out of range");
     if (seen[row])
       throw std::invalid_argument("native oracle target rows must be unique");
+    if (retained_components_) {
+      for (std::size_t basis = 0; basis < config_.basis.size(); ++basis)
+        if (!std::ranges::binary_search(
+                *retained_components_,
+                static_cast<std::uint32_t>(row * config_.basis.size() + basis)))
+          throw std::out_of_range("oracle row contains a discarded component");
+    }
     seen[row] = true;
   }
   std::vector<std::size_t> local_row(config_.targets.size(), config_.targets.size());
@@ -234,6 +251,134 @@ std::optional<NativeOracleEvaluation> NativeFixedBasisOracle::evaluate_complete_
     }
   }
   return result;
+}
+
+std::shared_ptr<const NativeFixedBasisOracle::PreparedComponents>
+NativeFixedBasisOracle::prepare_components(std::span<const std::uint32_t> positions)
+{
+  auto prepared = std::make_shared<PreparedComponents>();
+  prepared->owner = identity_;
+  prepared->constants.resize(positions.size(), 0);
+  std::vector<std::pair<std::uint32_t, std::size_t>> outputs;
+  auto unique = std::vector<std::uint32_t>(positions.begin(), positions.end());
+  std::ranges::sort(unique);
+  if (std::ranges::adjacent_find(unique) != unique.end())
+    throw std::invalid_argument("oracle component positions must be unique");
+  const auto support = black_box_->reconstructed_outputs();
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    const auto flat = positions[index];
+    if (flat >= total_output_count() ||
+        (retained_components_ &&
+         !std::ranges::binary_search(*retained_components_, flat)))
+      throw std::out_of_range("oracle component is outside the retained domain");
+    const auto row = flat / config_.basis.size();
+    if (unit_rows_[row]) {
+      prepared->constants[index] = (*unit_rows_[row])[flat % config_.basis.size()];
+      continue;
+    }
+    const auto found = std::ranges::lower_bound(support, flat);
+    if (found != support.end() && *found == flat)
+      outputs.emplace_back(static_cast<std::uint32_t>(found - support.begin()), index);
+  }
+  std::ranges::sort(outputs);
+  for (const auto [output, destination] : outputs) {
+    prepared->active_outputs.push_back(output);
+    prepared->destinations.push_back(destination);
+  }
+  return prepared;
+}
+
+std::optional<FieldVector>
+NativeFixedBasisOracle::evaluate_components(const std::vector<firefly::FFInt>& values,
+                                            const PreparedComponents& prepared)
+{
+  if (prepared.owner.lock() != identity_)
+    throw std::invalid_argument(
+        "prepared components belong to another oracle generation");
+  if (!prime_ || firefly::FFInt::p != *prime_)
+    throw std::logic_error("native oracle prime changed without notification");
+  if (values.size() != config_.parameters.size())
+    throw std::invalid_argument("native oracle complete sample has wrong size");
+  auto result = prepared.constants;
+  if (prepared.active_outputs.empty()) return result;
+  const auto evaluated =
+      black_box_->eval_selected_compact(values, prepared.active_outputs);
+  if (evaluated.empty()) return std::nullopt;
+  if (evaluated.size() != prepared.destinations.size())
+    throw std::logic_error("native oracle component result shape mismatch");
+  for (std::size_t index = 0; index < evaluated.size(); ++index)
+    result[prepared.destinations[index]] = evaluated[index].n;
+  return result;
+}
+
+bool NativeFixedBasisOracle::retain_components(std::span<const std::uint32_t> positions,
+                                               ReductionProgressCallback progress)
+{
+  if (black_box_->kernel_statistics().replay_orientation == "master") {
+    if (progress)
+      progress("Shared kernel trim: skipped master orientation",
+               ReductionProgressEvent::info);
+    return false;
+  }
+  const auto previous_prime = firefly::FFInt::p;
+  const auto old_plan = prepare_components(positions);
+  struct Sample {
+    std::uint64_t prime;
+    std::vector<std::uint64_t> values;
+    FieldVector expected;
+  };
+  std::vector<Sample> samples;
+  const auto primes = reduction::detail::usable_firefly_primes(config_, 2);
+  if (primes.size() != 2)
+    throw std::runtime_error("shared trim requires two validation primes");
+  try {
+    for (const auto prime : primes) {
+      set_prime(prime);
+      std::size_t valid = 0;
+      for (std::size_t attempt = 0; attempt < 16 && valid < 2; ++attempt) {
+        std::vector<firefly::FFInt> values;
+        for (std::size_t parameter = 0; parameter < config_.parameters.size();
+             ++parameter)
+          values.emplace_back(
+              probe_values::field_value(prime, parameter, attempt + 19));
+        auto expected = evaluate_components(values, *old_plan);
+        if (!expected) continue;
+        Sample sample{prime, {}, std::move(*expected)};
+        for (const auto& value : values)
+          sample.values.push_back(value.n);
+        samples.push_back(std::move(sample));
+        ++valid;
+      }
+      if (valid != 2)
+        throw std::runtime_error("shared trim validation sampling failed");
+    }
+    set_prime(previous_prime);
+    if (!black_box_->retain_outputs(old_plan->active_outputs, progress)) return false;
+    retained_components_ =
+        std::vector<std::uint32_t>(positions.begin(), positions.end());
+    std::ranges::sort(*retained_components_);
+    identity_ = std::make_shared<const int>(0);
+    all_rows_.reset();
+    last_rows_.store(nullptr, std::memory_order_release);
+    const auto new_plan = prepare_components(positions);
+    for (const auto& sample : samples) {
+      set_prime(sample.prime);
+      std::vector<firefly::FFInt> values;
+      for (const auto value : sample.values)
+        values.emplace_back(value);
+      const auto actual = evaluate_components(values, *new_plan);
+      if (!actual || *actual != sample.expected)
+        throw std::runtime_error("shared trim changed a validated coefficient");
+    }
+    set_prime(previous_prime);
+  } catch (...) {
+    set_prime(previous_prime);
+    throw;
+  }
+  if (progress)
+    progress("Shared kernel trim validation: primes=2, points_per_prime=2, passed",
+             ReductionProgressEvent::info);
+  return true;
 }
 
 } // namespace basis

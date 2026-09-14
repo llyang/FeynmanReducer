@@ -268,6 +268,13 @@ ReductionResult perform_reduction_impl(Config& config,
                                        ReductionOptions options)
 {
   if (config.basis_selection == BasisSelectionPolicy::DSeparating) {
+    if (options.d_separating_kernel == DSeparatingKernelStrategy::Auto) {
+      options.d_separating_kernel =
+          options.numerator_strategy == NumeratorReductionStrategy::Projected &&
+                  options.d_separating_shared == DSeparatingSharedOptimization::None
+              ? DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis
+              : DSeparatingKernelStrategy::SharedOracle;
+    }
     std::vector<std::uint32_t> relation_source_sectors;
     if (candidates != nullptr) {
       if (!candidates->requires_global_selection()) {
@@ -287,14 +294,77 @@ ReductionResult perform_reduction_impl(Config& config,
           return basis::DSeparatingReduction::prepare(
               config, config.basis, relation_source_sectors, progress, options);
         });
+    if (uses_recompact_source(options.d_separating_kernel)) {
+      auto source = black_box->take_recompact_source();
+      black_box.reset();
+      auto final_kernel = run_reduction_stage(
+          progress, "Recompact final D-separating reduction kernel", [&] {
+            return BlackBoxFeynman::prepare_from_source(config, std::move(source),
+                                                        progress, options);
+          });
+      if (options.d_separating_rebuild_replay != DSeparatingRebuildReplay::Exact) {
+        const bool enabled =
+            final_kernel->configure_rebuild_replay(options.d_separating_rebuild_replay);
+        if (progress)
+          progress(enabled
+                       ? (options.d_separating_rebuild_replay ==
+                                  DSeparatingRebuildReplay::TargetRowsCached
+                              ? "Final replay: target-row reuse with cache enabled"
+                              : "Final replay: target-row reuse enabled")
+                       : "Final replay: target-row reuse skipped (master orientation)",
+                   ReductionProgressEvent::info);
+      }
+      return reconstruct_prepared(config, std::move(final_kernel), std::move(progress));
+    }
+    if (options.d_separating_kernel == DSeparatingKernelStrategy::RebuildFinalBasis) {
+      black_box.reset();
+      auto final_kernel = run_reduction_stage(
+          progress, "Prepare final D-separating reduction kernel", [&] {
+            return BlackBoxFeynman::prepare(config, relation_source_sectors, progress,
+                                            options);
+          });
+      if (options.d_separating_rebuild_replay != DSeparatingRebuildReplay::Exact) {
+        const bool enabled =
+            final_kernel->configure_rebuild_replay(options.d_separating_rebuild_replay);
+        if (progress)
+          progress(enabled
+                       ? (options.d_separating_rebuild_replay ==
+                                  DSeparatingRebuildReplay::TargetRowsCached
+                              ? "Final replay: target-row reuse with cache enabled"
+                              : "Final replay: target-row reuse enabled")
+                       : "Final replay: target-row reuse skipped (master orientation)",
+                   ReductionProgressEvent::info);
+      }
+      return reconstruct_prepared(config, std::move(final_kernel), std::move(progress));
+    }
     return reconstruct_prepared(config, std::move(black_box), std::move(progress));
   }
 
+  options.d_separating_kernel = DSeparatingKernelStrategy::SharedOracle;
   auto black_box = run_reduction_stage(progress, "Prepare reduction kernel", [&] {
     return candidates == nullptr
                ? BlackBoxFeynman::prepare(config, progress, options)
                : BlackBoxFeynman::prepare(config, *candidates, progress, options);
   });
+  if (options.default_replay != DSeparatingRebuildReplay::Exact) {
+    const bool enabled = black_box->configure_rebuild_replay(options.default_replay);
+    if (progress)
+      progress(enabled
+                   ? "Default replay: target-row reuse enabled"
+                   : "Default replay: target-row reuse skipped (master orientation)",
+               ReductionProgressEvent::info);
+  }
+  if (options.default_master_replay != MasterReplayGrouping::Exact) {
+    const bool enabled =
+        black_box->configure_master_replay(options.default_master_replay);
+    if (progress) {
+      progress(!enabled ? "Default master replay: skipped (target orientation)"
+               : options.default_master_replay == MasterReplayGrouping::TargetRows
+                   ? "Default master replay: target-row reuse enabled"
+                   : "Default master replay: master-column reuse enabled",
+               ReductionProgressEvent::info);
+    }
+  }
   return reconstruct_prepared(config, std::move(black_box), std::move(progress));
 }
 
@@ -320,4 +390,17 @@ ReductionResult perform_reduction(Config config, masters::MasterCandidateSet can
                                   ReductionOptions options)
 {
   return perform_reduction_impl(config, &candidates, std::move(progress), options);
+}
+
+ReductionResult reduction::research::reconstruct_fixed_basis(
+    Config config, std::span<const std::uint32_t> relation_source_sectors,
+    ReductionProgressCallback progress, ReductionOptions options)
+{
+  if (config.basis.empty()) throw std::invalid_argument("fixed basis must not be empty");
+  options.d_separating_kernel = DSeparatingKernelStrategy::SharedOracle;
+  auto kernel = run_reduction_stage(progress, "Prepare fixed-basis experimental kernel", [&] {
+    return BlackBoxFeynman::prepare(config, relation_source_sectors, progress, options);
+  });
+  (void)kernel->configure_rebuild_replay(DSeparatingRebuildReplay::TargetRowsCached);
+  return reconstruct_prepared(config, std::move(kernel), std::move(progress));
 }

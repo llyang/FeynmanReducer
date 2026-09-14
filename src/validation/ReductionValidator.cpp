@@ -808,4 +808,110 @@ ValidationReport validate_reduction(const ValidationFiles& files,
   return report;
 }
 
+
+ValidationReport validate_basis_change(const BasisChangeValidationFiles& files,
+                                        std::size_t diagnostic_limit)
+{
+  const auto old_basis = parse_raw_basis(files.old_basis);
+  const auto new_basis = parse_raw_basis(files.new_basis);
+  const std::array raw{parse_raw_reduction(files.old_result),
+                       parse_raw_reduction(files.new_result),
+                       parse_raw_reduction(files.new_in_old),
+                       parse_raw_reduction(files.old_in_new)};
+  ValidationReport report;
+  report.master_count = old_basis.integrals.size();
+  report.target_count = raw[0].rules.size();
+  const auto reject = [&](std::string reason) {
+    add_difference(report, diagnostic_limit, std::move(reason));
+  };
+  if (old_basis.integrals.size() != new_basis.integrals.size())
+    reject("basis dimensions differ");
+  for (const auto& reduction : raw)
+    if (reduction.header != old_basis.header) reject("reduction integral headers differ");
+  if (old_basis.header != new_basis.header) reject("basis integral headers differ");
+  if (!report.passed()) return report;
+  std::set<std::string> parameters;
+  for (const auto& reduction : raw)
+    for (const auto& rule : reduction.rules)
+      for (const auto& term : linear_terms(rule.rhs, integral_name(reduction.header, rule.target)))
+        collect_parameter_names(term.coefficient, parameters);
+  const auto context = std::make_shared<FlintRationalContext>(
+      std::vector<std::string>(parameters.begin(),parameters.end()));
+  const auto old_result = parse_coefficients(raw[0],context);
+  const auto new_result = parse_coefficients(raw[1],context);
+  auto forward = parse_coefficients(raw[2],context);
+  auto reverse = parse_coefficients(raw[3],context);
+  const auto complete = [&](ParsedReduction& matrix, const RawBasis& domain, const RawBasis& range) {
+    for (const auto& integral : domain.integrals) {
+      if (matrix.rules.contains(integral)) continue;
+      if (!range.integrals.contains(integral)) {
+        reject("missing non-identity basis transformation row");
+        continue;
+      }
+      ParsedRule identity{integral,{}};
+      FlintRational one(context);
+      fmpz_mpoly_q_one(one.raw(),context->raw());
+      identity.coefficients.emplace(integral,std::move(one));
+      matrix.rules.emplace(integral,std::move(identity));
+    }
+    for (const auto& [target, row] : matrix.rules) {
+      if (!domain.integrals.contains(target)) reject("unexpected basis transformation row");
+      for (const auto& [master, value] : row.coefficients) {
+        (void)value;
+        if (!range.integrals.contains(master)) reject("undeclared transformation master");
+      }
+    }
+  };
+  complete(forward,new_basis,old_basis);
+  complete(reverse,old_basis,new_basis);
+  const auto check_outputs = [&](const ParsedReduction& result, const RawBasis& basis) {
+    for (const auto& [target,row] : result.rules) {
+      (void)target;
+      for (const auto& [master,value] : row.coefficients) {
+        (void)value;
+        if (!basis.integrals.contains(master)) reject("undeclared target coefficient master");
+      }
+    }
+  };
+  check_outputs(old_result,old_basis);
+  check_outputs(new_result,new_basis);
+  if (!report.passed()) return report;
+  const auto compose = [&](const ParsedRule& row, const ParsedReduction& matrix) {
+    ParsedRule result{row.target,{}};
+    for (const auto& [middle,weight] : row.coefficients)
+      for (const auto& [master,value] : matrix.rules.at(middle).coefficients) {
+        auto [it, inserted] = result.coefficients.try_emplace(master,context);
+        (void)inserted;
+        FlintRational product(context);
+        fmpz_mpoly_q_mul(product.raw(),weight.raw(),value.raw(),context->raw());
+        fmpz_mpoly_q_add(it->second.raw(),it->second.raw(),product.raw(),context->raw());
+      }
+    std::erase_if(result.coefficients, [](const auto& entry) { return entry.second.is_zero(); });
+    return result;
+  };
+  for (const auto& [target,row] : forward.rules)
+    if (!is_identity_rule(compose(row,reverse),target,*context))
+      reject("forward/reverse basis transforms are not inverses");
+  for (const auto& [target,row] : reverse.rules)
+    if (!is_identity_rule(compose(row,forward),target,*context))
+      reject("reverse/forward basis transforms are not inverses");
+  if (!report.passed()) return report;
+  for (const auto& [target,row] : old_result.rules) {
+    const auto found = new_result.rules.find(target);
+    if (found == new_result.rules.end()) { reject("missing physical target in new result"); continue; }
+    const auto converted = compose(found->second,forward);
+    for (const auto& master : old_basis.integrals) {
+      ++report.coefficient_count;
+      if (!rational_equal(coefficient(row,master),coefficient(converted,master),*context))
+        reject("cross-basis coefficient mismatch for " + integral_name(old_basis.header,target) +
+               " / " + integral_name(old_basis.header,master));
+    }
+  }
+  for (const auto& [target,row] : new_result.rules) {
+    (void)row;
+    if (!old_result.rules.contains(target)) reject("extra physical target in new result");
+  }
+  return report;
+}
+
 } // namespace validation

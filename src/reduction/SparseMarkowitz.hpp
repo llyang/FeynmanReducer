@@ -19,6 +19,11 @@
 
 namespace linalg {
 
+template <typename T> struct NumericalRowOperation {
+  std::uint32_t destination, source;
+  T factor; // source == destination scales; otherwise subtract factor * source.
+};
+
 enum class ColumnComplexityOrder {
   Ignore,
   Ascending,
@@ -71,12 +76,14 @@ template <typename T, bool CompactChoiceQueues = true>
     std::span<const std::uint32_t> column_complexities = {},
     ColumnComplexityOrder complexity_order = ColumnComplexityOrder::Ignore,
     SparseMarkowitzStatistics* statistics = nullptr, std::size_t planning_threads = 1,
-    std::size_t score_refresh_interval_hint = 0)
+    std::size_t score_refresh_interval_hint = 0,
+    std::vector<NumericalRowOperation<T>>* operations = nullptr)
 {
   using Clock = std::chrono::high_resolution_clock;
   const auto milliseconds = [](auto begin, auto end) {
     return std::chrono::duration<double, std::milli>(end - begin).count();
   };
+  if (operations) operations->clear();
   const size_t num_rows = matrix.size();
   planning_threads = std::max<std::size_t>(planning_threads, 1);
   if (rhs_cols > 0 && right_hand_side.size() != num_rows * rhs_cols)
@@ -314,6 +321,9 @@ template <typename T, bool CompactChoiceQueues = true>
     if (pivot_value == nullptr || *pivot_value == T(0))
       throw std::logic_error("Markowitz pivot disappeared");
     const T inverse = T(1) / *pivot_value;
+    if (operations)
+      operations->push_back({static_cast<std::uint32_t>(best_row),
+                             static_cast<std::uint32_t>(best_row), inverse});
     for (auto& entry : pivot_row) {
       if (active_columns[entry.column]) entry.value = entry.value * inverse;
     }
@@ -336,6 +346,9 @@ template <typename T, bool CompactChoiceQueues = true>
     const auto row_elimination_start = Clock::now();
     const auto eliminate_serial_row = [&](const ColumnIncidence& incidence, T factor) {
       const size_t row = incidence.row;
+      if (operations)
+        operations->push_back(
+            {incidence.row, static_cast<std::uint32_t>(best_row), factor});
       if (statistics != nullptr) ++statistics->row_eliminations;
       const bool rhs_was_nonzero = rhs_row_nonzeros[row] != 0;
       if (row_versions[row] == std::numeric_limits<std::uint32_t>::max())
@@ -460,6 +473,9 @@ template <typename T, bool CompactChoiceQueues = true>
       for (std::size_t index = 0; index < task_count; ++index) {
         auto& task = parallel_row_tasks[index];
         const size_t row = task.row;
+        if (operations)
+          operations->push_back(
+              {task.row, static_cast<std::uint32_t>(best_row), task.factor});
         const bool rhs_was_nonzero = rhs_row_nonzeros[row] != 0;
         for (const auto& change : task.changes) {
           const size_t changed_column = change.column;

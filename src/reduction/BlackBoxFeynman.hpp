@@ -144,6 +144,7 @@ struct ReductionKernelStatistics {
 /// 有限域上的参数值，返回约化系数的有限域值。
 /// =========================================================================
 class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
+  friend struct ReplayRowSelectionTestAccess;
 
   // Low-level preparation borrows an immutable Config. perform_reduction keeps
   // its owned Config alive for the complete FireFly reconstruction; direct
@@ -469,14 +470,39 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
     std::vector<LoadInstruction> loader_B;
     std::vector<PooledCoefficientLoad> pooled_loader_B;
     std::vector<TopLpLoadInstruction> top_lp_loader_B;
+    std::vector<std::int64_t> loader_B_weights;
+    std::vector<std::int64_t> top_lp_loader_B_weights;
     std::vector<ReplayOutput> outputs;
     std::vector<std::uint32_t> master_columns;
     std::optional<SelectedMasterReplay> selected_master;
     std::size_t matrix_workspace_size = 0;
     std::size_t rhs_workspace_size = 0;
   };
+  DSeparatingRebuildReplay rebuild_replay_policy = DSeparatingRebuildReplay::Exact;
+  MasterReplayGrouping master_replay_grouping = MasterReplayGrouping::Exact;
+  [[nodiscard]] std::vector<firefly::FFInt>
+  eval_grouped_outputs(const std::vector<firefly::FFInt>& values,
+                       std::span<const std::uint32_t> active_outputs, bool by_master);
   mutable std::mutex replay_variant_mutex;
   mutable core::AtomicSharedPtr<const ReplayVariant> replay_variant;
+  [[nodiscard]] std::vector<std::uint64_t> target_replay_loader_layout() const;
+  [[nodiscard]] std::shared_ptr<const ReplayVariant>
+  refresh_target_replay_variant(const ReplayVariant&) const;
+  struct ReplayCacheEntry {
+    std::shared_ptr<const ReplayVariant> variant;
+    std::size_t bytes = 0;
+  };
+  struct ReplayCache {
+    std::vector<ReplayCacheEntry> entries;
+    std::size_t bytes = 0;
+  };
+  static constexpr std::size_t replay_cache_entries = 8;
+  static constexpr std::size_t replay_cache_budget = 512ULL * 1024 * 1024;
+  mutable core::AtomicSharedPtr<const ReplayCache> replay_cache;
+  [[nodiscard]] static std::size_t replay_variant_bytes(const ReplayVariant& variant);
+  [[nodiscard]] std::shared_ptr<const ReplayVariant>
+  cached_replay_variant(std::span<const std::uint32_t> active_outputs) const;
+
   // Share heavy master programs along the current/in-flight inclusion chain,
   // without extending their lifetime beyond the replay variants that use them.
   // A non-comparable public request starts a new chain.
@@ -550,7 +576,8 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   /// Evaluate all coefficient programs in the current finite field.
   [[nodiscard]] EvaluatedCoeffs<firefly::FFInt>
   evaluate_coefficients(const std::vector<firefly::FFInt>& values,
-                        const CoefficientSelection* selection = nullptr) const;
+                        const CoefficientSelection* selection = nullptr,
+                        const CoefficientSelection* normalization = nullptr) const;
 
   /// 探测能解出所有目标积分的拟设边界，并生成压缩方阵的骨架结构
   ///
@@ -598,25 +625,49 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   [[nodiscard]] std::vector<firefly::FFInt>
   execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
                  const std::vector<firefly::FFInt>& values,
-                 const ReplayVariant* variant = nullptr) const;
+                 const ReplayVariant* variant = nullptr,
+                 const std::vector<ReplayOutput>* requested_outputs = nullptr,
+                 const CoefficientSelection* normalization = nullptr) const;
 
   [[nodiscard]] std::shared_ptr<const ReplayVariant>
   selected_replay_variant(std::span<const std::uint32_t> active_outputs) const;
   [[nodiscard]] std::shared_ptr<ReplayVariant>
-  build_replay_variant(std::span<const std::uint32_t> active_outputs) const;
+  build_replay_variant(std::span<const std::uint32_t> active_outputs,
+                       bool permanent = false) const;
 
   void select_reconstructed_outputs(std::span<const std::uint8_t> nonzero_outputs);
   void finalize_replay(const ReductionProgressCallback& progress);
   void complete_coefficient_selection(CoefficientSelection& selection) const;
 
-  explicit BlackBoxFeynman(const Config& config, ReductionOptions options);
+  std::unique_ptr<reduction::detail::RecompactSource> recompact_source_;
+  void plan_from_source(const reduction::detail::RecompactSource& source,
+                        const EvaluatedCoeffs<firefly::FFInt>& coeffs,
+                        const std::vector<firefly::FFInt>& values,
+                        const ReductionProgressCallback& progress,
+                        bool reuse_checkpoint, bool reselect_support);
+  explicit BlackBoxFeynman(const Config& config, ReductionOptions options,
+                           const reduction::detail::RecompactSource* source = nullptr);
 
   [[nodiscard]] static std::unique_ptr<BlackBoxFeynman>
   prepare_impl(const Config& config, const ReductionProgressCallback& progress,
                ReductionOptions options,
-               std::span<const std::uint32_t> relation_source_sectors = {});
+               std::span<const std::uint32_t> relation_source_sectors = {},
+               const reduction::detail::RecompactSource* source = nullptr);
 
 public:
+  // Internal transition; config must use the same compiled topology as the search.
+  [[nodiscard]] std::unique_ptr<reduction::detail::RecompactSource>
+  take_recompact_source();
+  [[nodiscard]] static std::unique_ptr<BlackBoxFeynman> prepare_from_source(
+      const Config& config, std::unique_ptr<reduction::detail::RecompactSource> source,
+      ReductionProgressCallback progress = {}, ReductionOptions options = {});
+  static std::unique_ptr<BlackBoxFeynman>
+  prepare_from_source(Config&&, std::unique_ptr<reduction::detail::RecompactSource>,
+                      ReductionProgressCallback = {}, ReductionOptions = {}) = delete;
+  // Quiescent preparation only. Original flat output positions remain stable.
+  // Master orientation is intentionally unchanged by this experimental operation.
+  bool retain_outputs(std::span<const std::uint32_t> active_outputs,
+                      ReductionProgressCallback progress = {});
   // These low-level entry points deliberately borrow config to avoid copying
   // the compiled polynomial data. Temporaries are rejected explicitly.
   [[nodiscard]] static std::unique_ptr<BlackBoxFeynman>
@@ -655,6 +706,13 @@ public:
   {
     return cfg.targets.size() * cfg.basis.size();
   }
+
+  // Internal experiment: call only on a quiescent, prepared final kernel.
+  // Returns false for master replay, whose selection policy remains unchanged.
+  bool configure_rebuild_replay(DSeparatingRebuildReplay policy);
+
+  // Prepared, quiescent master kernel only; false leaves target policy unchanged.
+  bool configure_master_replay(MasterReplayGrouping policy);
 
   /// FireFly 回调: 质数切换时调用
   void prime_changed();

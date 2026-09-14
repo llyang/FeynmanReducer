@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "core/Config.hpp"
 #include "core/MasterCandidates.hpp"
 #include "core/ReductionResult.hpp"
@@ -20,3 +22,11 @@ perform_reduction_owned(Config config, ReductionProgressCallback progress = {},
                                                 masters::MasterCandidateSet candidates,
                                                 ReductionProgressCallback progress = {},
                                                 ReductionOptions options = {});
+
+namespace reduction::research {
+// Fixed-basis reconstruction for independent change-of-basis experiments. The
+// caller supplies the verified basis and preserves its relation-source anchors.
+[[nodiscard]] ReductionResult reconstruct_fixed_basis(
+    Config config, std::span<const std::uint32_t> relation_source_sectors,
+    ReductionProgressCallback progress = {}, ReductionOptions options = {});
+}

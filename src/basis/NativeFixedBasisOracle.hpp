@@ -18,6 +18,10 @@
 
 class BlackBoxFeynman;
 
+namespace reduction::detail {
+struct RecompactSource;
+}
+
 namespace basis {
 
 struct NativeOracleEvaluation {
@@ -48,6 +52,31 @@ public:
     std::vector<std::uint32_t> active_outputs;
     std::vector<std::pair<std::size_t, std::size_t>> destinations;
   };
+
+  class PreparedComponents {
+  public:
+    [[nodiscard]] std::size_t replay_output_count() const
+    {
+      return active_outputs.size();
+    }
+
+  private:
+    friend class NativeFixedBasisOracle;
+    std::weak_ptr<const int> owner;
+    std::vector<std::uint32_t> active_outputs;
+    std::vector<std::size_t> destinations;
+    FieldVector constants;
+  };
+
+  // Flat positions refer to the original target-major, initial-basis-major registry.
+  [[nodiscard]] std::shared_ptr<const PreparedComponents>
+  prepare_components(std::span<const std::uint32_t> positions);
+  [[nodiscard]] std::optional<FieldVector>
+  evaluate_components(const std::vector<firefly::FFInt>& values,
+                      const PreparedComponents& prepared);
+  // Quiescent, validated transition. Invalidates old prepared handles on success.
+  bool retain_components(std::span<const std::uint32_t> positions,
+                         ReductionProgressCallback progress = {});
 
   [[nodiscard]] static std::unique_ptr<NativeFixedBasisOracle>
   prepare(Config config, std::vector<Integral> basis,
@@ -96,6 +125,9 @@ public:
   evaluate_rows(std::span<const firefly::FFInt> values,
                 const PreparedRows& prepared_rows);
 
+  [[nodiscard]] std::unique_ptr<reduction::detail::RecompactSource>
+  take_recompact_source();
+
   [[nodiscard]] const Config& config() const noexcept
   {
     return config_;
@@ -122,10 +154,11 @@ private:
   bool compute_quotient_normalized_ = true;
   std::vector<std::optional<FieldVector>> unit_rows_;
   std::unique_ptr<BlackBoxFeynman> black_box_;
-  const std::shared_ptr<const int> identity_ = std::make_shared<const int>(0);
+  std::shared_ptr<const int> identity_ = std::make_shared<const int>(0);
   std::shared_ptr<const PreparedRows> all_rows_;
   core::AtomicSharedPtr<const PreparedRows> last_rows_;
   std::optional<std::uint64_t> prime_;
+  std::optional<std::vector<std::uint32_t>> retained_components_;
 };
 
 } // namespace basis

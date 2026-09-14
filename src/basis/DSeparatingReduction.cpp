@@ -1,8 +1,10 @@
 #include "basis/DSeparatingReduction.hpp"
 
 #include "basis/FiniteField.hpp"
+#include "reduction/KernelPlanning.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <limits>
 #include <numeric>
@@ -11,6 +13,13 @@
 #include <utility>
 
 namespace basis {
+
+std::unique_ptr<reduction::detail::RecompactSource>
+DSeparatingReduction::take_recompact_source()
+{
+  return prepared_.oracle->take_recompact_source();
+}
+
 namespace {
 
 std::size_t find_integral(std::span<const Integral> values, const Integral& integral)
@@ -24,7 +33,9 @@ std::size_t find_integral(std::span<const Integral> values, const Integral& inte
 } // namespace
 
 DSeparatingReduction::DSeparatingReduction(PreparedDSeparatingBasisSearch prepared,
-                                           std::vector<Integral> original_targets)
+                                           std::vector<Integral> original_targets,
+                                           DSeparatingSharedOptimization optimization,
+                                           const ReductionProgressCallback& progress)
     : prepared_(std::move(prepared)), original_targets_(std::move(original_targets)),
       final_output_support_(std::move(prepared_.final_output_support))
 {
@@ -32,7 +43,15 @@ DSeparatingReduction::DSeparatingReduction(PreparedDSeparatingBasisSearch prepar
     throw std::invalid_argument("D-separating reduction is not prepared");
   const auto initial_basis = prepared_.oracle->basis();
   const auto& selected_basis = prepared_.report.selected_basis;
-  identity_basis_ = initial_basis.size() == selected_basis.size() &&
+  auto slots = prepared_.selected_basis_to_swap_slot;
+  std::ranges::sort(slots);
+  if (slots.size() != selected_basis.size())
+    throw std::logic_error("D-separating basis permutation has the wrong size");
+  for (std::size_t index = 0; index < slots.size(); ++index)
+    if (slots[index] != index)
+      throw std::logic_error("D-separating basis permutation is not bijective");
+  identity_basis_ = prepared_.report.swap_path.empty() &&
+                    initial_basis.size() == selected_basis.size() &&
                     std::ranges::equal(initial_basis, selected_basis);
 
   for (const auto& swap : prepared_.report.swap_path) {
@@ -44,7 +63,35 @@ DSeparatingReduction::DSeparatingReduction(PreparedDSeparatingBasisSearch prepar
 
   std::vector<std::uint32_t> all_outputs(final_output_support_.size());
   std::iota(all_outputs.begin(), all_outputs.end(), std::uint32_t{0});
+  const auto specialization_started =
+      optimization == DSeparatingSharedOptimization::None
+          ? std::chrono::steady_clock::time_point{}
+          : std::chrono::steady_clock::now();
+  if (optimization != DSeparatingSharedOptimization::None) {
+    auto rows = target_rows_;
+    rows.insert(rows.end(), swap_rows_.begin(), swap_rows_.end());
+    std::ranges::sort(rows);
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    std::vector<std::uint32_t> inputs;
+    for (const auto row : rows)
+      for (std::size_t slot = 0; slot < selected_basis.size(); ++slot)
+        inputs.push_back(
+            static_cast<std::uint32_t>(row * selected_basis.size() + slot));
+    prepared_.oracle->retain_components(inputs, progress);
+    if (progress)
+      progress(std::format("Shared dependency selection: components={}, "
+                           "original_row_components={}, mode={}",
+                           inputs.size(), rows.size() * selected_basis.size(),
+                           "rows"),
+               ReductionProgressEvent::info);
+  }
   full_selection_plan_ = build_selection_plan(all_outputs);
+  if (optimization != DSeparatingSharedOptimization::None && progress)
+    progress(std::format("Shared specialization: elapsed_ms={:.2f}",
+                         std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - specialization_started)
+                             .count()),
+             ReductionProgressEvent::info);
 }
 
 DSeparatingReduction::~DSeparatingReduction() = default;
@@ -56,6 +103,11 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
 {
   auto original_targets = output_config.targets;
   DSeparatingBasisSearchOptions search_options;
+  search_options.strategy = options.d_separating_search;
+  if (progress)
+    progress(std::format("D-separating search strategy: {}",
+                         static_cast<unsigned>(search_options.strategy)),
+             ReductionProgressEvent::info);
   auto search_progress = [&](std::string_view message) {
     if (progress)
       progress(std::format("D-separating basis: {}", message),
@@ -104,8 +156,13 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
                  prepared.report.probe_statistics.avoided_basis_factorizations),
              ReductionProgressEvent::info);
   }
-  auto result = std::unique_ptr<DSeparatingReduction>(
-      new DSeparatingReduction(std::move(prepared), std::move(original_targets)));
+  auto result = std::unique_ptr<DSeparatingReduction>(new DSeparatingReduction(
+      std::move(prepared), std::move(original_targets),
+      (options.d_separating_kernel == DSeparatingKernelStrategy::SharedOracle ||
+       options.d_separating_kernel == DSeparatingKernelStrategy::Auto)
+          ? options.d_separating_shared
+          : DSeparatingSharedOptimization::None,
+      progress));
   output_config.basis.swap(selected_basis);
   return result;
 }
@@ -236,7 +293,9 @@ DSeparatingReduction::evaluate_plan(const std::vector<firefly::FFInt>& values,
     const auto rebased = rebase_after_basis_swaps(
         field, probe->conventional[plan.target_probe_positions[target]], *tape);
     for (const auto output : plan.output_indices_by_target[target])
-      result[output] = firefly::FFInt(rebased[plan.output_basis_positions[output]]);
+      result[output] =
+          firefly::FFInt(rebased[prepared_.selected_basis_to_swap_slot
+                                     [plan.output_basis_positions[output]]]);
   }
   return result;
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <ranges>
@@ -93,6 +94,8 @@ std::shared_ptr<const BlackBoxFeynman::ReplayVariant>
 BlackBoxFeynman::selected_replay_variant(
     std::span<const std::uint32_t> active_outputs) const
 {
+  if (rebuild_replay_policy == DSeparatingRebuildReplay::TargetRowsCached)
+    return cached_replay_variant(active_outputs);
   auto current = replay_variant.load(std::memory_order_acquire);
   if (current != nullptr &&
       std::ranges::equal(current->active_outputs, active_outputs)) {
@@ -114,8 +117,9 @@ BlackBoxFeynman::selected_replay_variant(
   return variant;
 }
 
-std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_variant(
-    std::span<const std::uint32_t> active_outputs) const
+std::shared_ptr<BlackBoxFeynman::ReplayVariant>
+BlackBoxFeynman::build_replay_variant(std::span<const std::uint32_t> active_outputs,
+                                      bool permanent) const
 {
   auto variant = std::make_shared<ReplayVariant>();
   variant->active_outputs.assign(active_outputs.begin(), active_outputs.end());
@@ -496,6 +500,15 @@ std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_va
     return result;
   };
 
+  const auto selected_weights = [](const auto& loader, const auto& weights, auto keep) {
+    if (loader.size() != weights.size())
+      throw std::logic_error("retained loader weight shape mismatch");
+    std::vector<std::int64_t> result;
+    for (std::size_t index = 0; index < loader.size(); ++index)
+      if (keep(loader[index].flat_idx)) result.push_back(weights[index]);
+    return result;
+  };
+
   for (std::size_t block_index = 0; block_index < replay_blocks.size(); ++block_index) {
     const auto& source = replay_blocks[block_index];
     BlockReplayProgram selected;
@@ -574,6 +587,25 @@ std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_va
         source.pooled_loader_couplings, selected.couplings);
     selected.top_lp_loader_couplings = filter_top_lp_coupling_loader(
         source.top_lp_loader_couplings, selected.couplings);
+    if (permanent || cfg.basis_selection == BasisSelectionPolicy::DSeparating) {
+      const auto matrix_live = [&](std::size_t slot) {
+        return slot < layout.matrix_remap.size() &&
+               layout.matrix_remap[slot] != linalg::CompactedTapeLayout::INVALID_SLOT;
+      };
+      const auto coupling_live = [&](std::size_t slot) {
+        return selected.couplings.at(slot).target_begin !=
+               selected.couplings.at(slot).target_end;
+      };
+      selected.loader_M_weights =
+          selected_weights(source.loader_M, source.loader_M_weights, matrix_live);
+      selected.top_lp_loader_M_weights = selected_weights(
+          source.top_lp_loader_M, source.top_lp_loader_M_weights, matrix_live);
+      selected.loader_coupling_weights = selected_weights(
+          source.loader_couplings, source.loader_coupling_weights, coupling_live);
+      selected.top_lp_loader_coupling_weights =
+          selected_weights(source.top_lp_loader_couplings,
+                           source.top_lp_loader_coupling_weights, coupling_live);
+    }
     variant->blocks.push_back(std::move(selected));
   }
 
@@ -605,6 +637,11 @@ std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_va
     }
   }
 
+  if (permanent || cfg.basis_selection == BasisSelectionPolicy::DSeparating) {
+    variant->loader_B_weights = selected_weights(loader_B, loader_B_weights, live_rhs);
+    variant->top_lp_loader_B_weights =
+        selected_weights(top_lp_loader_B, top_lp_loader_B_weights, live_rhs);
+  }
   std::vector<std::uint32_t> rhs_remap(live_global_rhs.size(),
                                        linalg::CompactedTapeLayout::INVALID_SLOT);
   std::uint32_t live_rhs_count = 0;
@@ -648,7 +685,7 @@ std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_va
       operation.source = compact_rhs_slot(operation.source);
     }
     block.compiled_tape = linalg::compile_tape(block.tape);
-    std::vector<linalg::Instruction>().swap(block.tape);
+    if (!permanent) std::vector<linalg::Instruction>().swap(block.tape);
   }
   variant->rhs_workspace_size = live_rhs_count;
 
@@ -670,5 +707,298 @@ std::shared_ptr<BlackBoxFeynman::ReplayVariant> BlackBoxFeynman::build_replay_va
   }
   complete_coefficient_selection(variant->coefficients);
 
+  return variant;
+}
+
+bool BlackBoxFeynman::retain_outputs(std::span<const std::uint32_t> active_outputs,
+                                     ReductionProgressCallback progress)
+{
+  if (!std::ranges::is_sorted(active_outputs) ||
+      std::ranges::adjacent_find(active_outputs) != active_outputs.end() ||
+      (!active_outputs.empty() && active_outputs.back() >= replay_outputs.size()))
+    throw std::invalid_argument("retained outputs must be sorted, unique and in range");
+  if (replay_orientation == ReplayOrientation::Master) {
+    if (progress)
+      progress("Shared kernel trim: skipped master orientation",
+               ReductionProgressEvent::info);
+    return false;
+  }
+  const auto old_outputs = replay_outputs.size();
+  const auto old_matrix = matrix_workspace_size;
+  const auto old_rhs = rhs_workspace_size;
+  const auto old_expressions = coefficient_expressions.size();
+  const auto instruction_count = [](const auto& blocks) {
+    std::size_t count = 0;
+    for (const auto& block : blocks)
+      count += block.tape.size();
+    return count;
+  };
+  const auto old_instructions = instruction_count(replay_blocks);
+  auto retained = build_replay_variant(active_outputs, true);
+  std::vector<std::uint32_t> positions;
+  for (const auto output : active_outputs)
+    positions.push_back(reconstructed_output_positions[output]);
+
+  constexpr auto invalid = std::numeric_limits<std::uint32_t>::max();
+  const auto mapping = [&](std::size_t size, const auto& used) {
+    std::vector<std::uint32_t> map(size, invalid);
+    for (std::size_t index = 0; index < used.size(); ++index)
+      map.at(used[index]) = static_cast<std::uint32_t>(index);
+    return map;
+  };
+  const auto& selection = retained->coefficients;
+  const auto pool_map =
+      mapping(coefficient_expressions.size(), selection.pooled_expressions);
+  std::vector<CoefficientExpression> expressions;
+  std::vector<CoefficientTerm> terms;
+  for (const auto id : selection.pooled_expressions) {
+    auto expression = coefficient_expressions[id];
+    const auto begin = expression.term_begin;
+    expression.term_begin = static_cast<std::uint32_t>(terms.size());
+    terms.insert(terms.end(), coefficient_terms.begin() + begin,
+                 coefficient_terms.begin() + begin + expression.term_count);
+    expressions.push_back(expression);
+  }
+  const auto top_map =
+      mapping(top_lp_expression_programs.size(), selection.top_lp_expressions);
+  const auto product_map =
+      mapping(top_lp_product_nodes.size(), selection.top_lp_product_nodes);
+  std::vector<TopLpExpressionProgram> top_programs;
+  std::vector<TopLpExpressionTerm> top_terms;
+  for (const auto id : selection.top_lp_expressions) {
+    auto program = top_lp_expression_programs[id];
+    const auto begin = program.term_begin;
+    program.term_begin = static_cast<std::uint32_t>(top_terms.size());
+    for (std::size_t index = begin; index < begin + program.term_count; ++index) {
+      auto term = top_lp_expression_terms[index];
+      if (term.product != 0) term.product = product_map.at(term.product - 1) + 1;
+      top_terms.push_back(term);
+    }
+    top_programs.push_back(program);
+  }
+  std::vector<TopLpProductNode> products;
+  for (const auto id : selection.top_lp_product_nodes) {
+    auto product = top_lp_product_nodes[id];
+    if (product.parent != 0) product.parent = product_map.at(product.parent - 1) + 1;
+    products.push_back(product);
+  }
+  const auto lp_map = mapping(lp_programs.size(), selection.lp_programs);
+  std::vector<LpProgram> normalization;
+  for (const auto id : selection.lp_programs)
+    normalization.push_back(lp_programs[id]);
+  const auto remap_loads = [&](auto& loads, const auto& map) {
+    for (auto& load : loads) {
+      load.expression = map.at(load.expression);
+      if (load.expression == invalid)
+        throw std::logic_error("retained expression is dead");
+    }
+  };
+  remap_loads(retained->pooled_loader_B, pool_map);
+  remap_loads(retained->top_lp_loader_B, top_map);
+  for (auto& block : retained->blocks) {
+    remap_loads(block.pooled_loader_M, pool_map);
+    remap_loads(block.pooled_loader_couplings, pool_map);
+    remap_loads(block.top_lp_loader_M, top_map);
+    remap_loads(block.top_lp_loader_couplings, top_map);
+  }
+  for (auto& id : target_lp_program_ids)
+    if (id != invalid) id = lp_map.at(id);
+  for (auto& id : basis_lp_program_ids)
+    if (id != invalid) id = lp_map.at(id);
+  coefficient_expressions = std::move(expressions);
+  coefficient_terms = std::move(terms);
+  top_lp_expression_programs = std::move(top_programs);
+  top_lp_expression_terms = std::move(top_terms);
+  top_lp_product_nodes = std::move(products);
+  lp_programs = std::move(normalization);
+  replay_blocks = std::move(retained->blocks);
+  replay_outputs = std::move(retained->outputs);
+  loader_B = std::move(retained->loader_B);
+  loader_B_weights = std::move(retained->loader_B_weights);
+  pooled_loader_B = std::move(retained->pooled_loader_B);
+  top_lp_loader_B = std::move(retained->top_lp_loader_B);
+  top_lp_loader_B_weights = std::move(retained->top_lp_loader_B_weights);
+  matrix_workspace_size = retained->matrix_workspace_size;
+  rhs_workspace_size = retained->rhs_workspace_size;
+  reconstructed_output_positions = std::move(positions);
+  replay_coefficients = std::move(retained->coefficients);
+  for (auto& id : replay_coefficients.pooled_expressions)
+    id = pool_map.at(id);
+  for (auto& id : replay_coefficients.top_lp_expressions)
+    id = top_map.at(id);
+  complete_coefficient_selection(replay_coefficients);
+  full_lp_reciprocals = replay_coefficients.lp_reciprocals;
+  top_lp_maximum_falling_degree = replay_coefficients.maximum_falling_degree;
+  maximum_positive_lp_delta = replay_coefficients.maximum_positive_lp_delta;
+  maximum_negative_lp_delta = replay_coefficients.maximum_negative_lp_delta;
+  replay_variant.store(nullptr, std::memory_order_release);
+  replay_cache.store(nullptr, std::memory_order_release);
+  selected_master_structure_cache.clear();
+  if (progress)
+    progress(std::format("Shared kernel trim: outputs={}->{}, instructions={}->{}, "
+                         "matrix_slots={}->{}, "
+                         "rhs_slots={}->{}, pooled_expressions={}->{}",
+                         old_outputs, replay_outputs.size(), old_instructions,
+                         instruction_count(replay_blocks), old_matrix,
+                         matrix_workspace_size, old_rhs, rhs_workspace_size,
+                         old_expressions, coefficient_expressions.size()),
+             ReductionProgressEvent::info);
+  return true;
+}
+
+bool BlackBoxFeynman::configure_rebuild_replay(DSeparatingRebuildReplay policy)
+{
+  if (!output_support_initialized)
+    throw std::logic_error("rebuild replay requires a prepared kernel");
+  std::lock_guard lock(replay_variant_mutex);
+  replay_variant.store(nullptr, std::memory_order_release);
+  replay_cache.store(nullptr, std::memory_order_release);
+  master_replay_grouping = MasterReplayGrouping::Exact;
+  rebuild_replay_policy = replay_orientation == ReplayOrientation::Target
+                              ? policy
+                              : DSeparatingRebuildReplay::Exact;
+  return replay_orientation == ReplayOrientation::Target;
+}
+
+bool BlackBoxFeynman::configure_master_replay(MasterReplayGrouping policy)
+{
+  if (!output_support_initialized)
+    throw std::logic_error("master grouping requires a prepared kernel");
+  if (replay_orientation != ReplayOrientation::Master) return false;
+  std::lock_guard lock(replay_variant_mutex);
+  replay_variant.store(nullptr, std::memory_order_release);
+  replay_cache.store(nullptr, std::memory_order_release);
+  rebuild_replay_policy = DSeparatingRebuildReplay::Exact;
+  master_replay_grouping = policy;
+  return true;
+}
+
+std::vector<firefly::FFInt>
+BlackBoxFeynman::eval_grouped_outputs(const std::vector<firefly::FFInt>& values,
+                                      std::span<const std::uint32_t> active_outputs,
+                                      bool by_master)
+{
+  std::vector<std::uint8_t> groups(by_master ? cfg.basis.size() : cfg.targets.size(),
+                                   0);
+  CoefficientSelection normalization;
+  for (const auto output : active_outputs) {
+    const auto& descriptor = replay_outputs[output];
+    groups[by_master ? descriptor.basis : descriptor.target] = 1;
+    normalization.targets.push_back(descriptor.target);
+    normalization.basis.push_back(descriptor.basis);
+  }
+  complete_coefficient_selection(normalization);
+  std::vector<std::uint32_t> grouped;
+  grouped.reserve(replay_outputs.size());
+  for (std::size_t output = 0; output < replay_outputs.size(); ++output)
+    if (groups[by_master ? replay_outputs[output].basis
+                         : replay_outputs[output].target])
+      grouped.push_back(static_cast<std::uint32_t>(output));
+
+  // A complete grouped request borrows the published program rather than copying it.
+  const auto variant = grouped.size() == replay_outputs.size()
+                           ? std::shared_ptr<const ReplayVariant>{}
+                           : selected_replay_variant(grouped);
+  std::vector<ReplayOutput> requested;
+  requested.reserve(active_outputs.size());
+  std::size_t position = 0;
+  for (const auto output : active_outputs) {
+    if (variant) {
+      while (position < grouped.size() && grouped[position] < output)
+        ++position;
+      if (position == grouped.size() || grouped[position] != output)
+        throw std::logic_error("grouped replay lost a requested output");
+      requested.push_back(variant->outputs[position]);
+    } else {
+      requested.push_back(replay_outputs[output]);
+    }
+  }
+  const auto* coefficients = variant ? &variant->coefficients : &replay_coefficients;
+  const auto evaluated = evaluate_coefficients(values, coefficients, &normalization);
+  return execute_replay(evaluated, values, variant.get(), &requested, &normalization);
+}
+
+std::size_t BlackBoxFeynman::replay_variant_bytes(const ReplayVariant& variant)
+{
+  // Target variants own no master program. Count allocated capacity, including
+  // unused vector tails; shared immutable base-kernel storage is not charged.
+  if (variant.selected_master)
+    throw std::logic_error("target cache received master replay");
+  const auto storage = [](const auto&... vectors) {
+    return (std::size_t{0} + ... +
+            (vectors.capacity() *
+             sizeof(typename std::decay_t<decltype(vectors)>::value_type)));
+  };
+  const auto& c = variant.coefficients;
+  std::size_t bytes = sizeof(ReplayVariant) +
+                      storage(variant.active_outputs, variant.blocks, variant.loader_B,
+                              variant.pooled_loader_B, variant.top_lp_loader_B,
+                              variant.loader_B_weights, variant.top_lp_loader_B_weights,
+                              variant.outputs, variant.master_columns,
+                              c.top_lp_expressions, c.top_lp_product_nodes,
+                              c.extended_polynomial_factors, c.pooled_expressions,
+                              c.lp_programs, c.lp_reciprocals, c.targets, c.basis);
+  for (const auto& block : variant.blocks) {
+    if (block.master) throw std::logic_error("target cache received master block");
+    bytes += storage(
+        block.tape, block.compiled_tape.groups, block.compiled_tape.operations,
+        block.compiled_tape.rhs_ranges, block.skeleton_M, block.loader_M,
+        block.loader_M_weights, block.pooled_loader_M, block.top_lp_skeleton_M,
+        block.top_lp_loader_M, block.top_lp_loader_M_weights, block.couplings,
+        block.coupling_targets, block.coupling_operations, block.skeleton_couplings,
+        block.loader_couplings, block.loader_coupling_weights,
+        block.pooled_loader_couplings, block.top_lp_skeleton_couplings,
+        block.top_lp_loader_couplings, block.top_lp_loader_coupling_weights);
+  }
+  return bytes;
+}
+
+std::shared_ptr<const BlackBoxFeynman::ReplayVariant>
+BlackBoxFeynman::cached_replay_variant(
+    std::span<const std::uint32_t> active_outputs) const
+{
+  const auto find = [&](const std::shared_ptr<const ReplayCache>& cache)
+      -> std::shared_ptr<const ReplayVariant> {
+    if (cache) {
+      for (auto it = cache->entries.rbegin(); it != cache->entries.rend(); ++it)
+        if (std::ranges::equal(it->variant->active_outputs, active_outputs))
+          return it->variant;
+    }
+    return {};
+  };
+  auto current = replay_cache.load(std::memory_order_acquire);
+  if (auto hit = find(current)) return hit;
+  current.reset();
+  // Hits never acquire this construction lock. Only builders serialize, and a
+  // waiter rechecks publication before doing any expensive work.
+  std::unique_lock lock(replay_variant_mutex);
+  current = replay_cache.load(std::memory_order_relaxed);
+  if (auto hit = find(current)) return hit;
+  auto variant = build_replay_variant(active_outputs);
+  const auto bytes = replay_variant_bytes(*variant);
+  if (bytes <= replay_cache_budget) {
+    auto next = std::make_shared<ReplayCache>();
+    next->entries.reserve(replay_cache_entries);
+    // Preserve insertion order and evict oldest entries before publishing.
+    std::size_t begin = 0;
+    std::size_t retained = current ? current->bytes : 0;
+    if (current) {
+      while (begin < current->entries.size() &&
+             (current->entries.size() - begin >= replay_cache_entries ||
+              retained > replay_cache_budget - bytes)) {
+        retained -= current->entries[begin++].bytes;
+      }
+      next->entries.insert(next->entries.end(),
+                           current->entries.begin() +
+                               static_cast<std::ptrdiff_t>(begin),
+                           current->entries.end());
+    }
+    next->entries.push_back({variant, bytes});
+    next->bytes = retained + bytes;
+    replay_cache.store(std::move(next), std::memory_order_release);
+  }
+  lock.unlock();
+  // Old entries are destroyed after unlocking. In-flight probes own their
+  // individual variants, so eviction cannot invalidate an executing program.
   return variant;
 }

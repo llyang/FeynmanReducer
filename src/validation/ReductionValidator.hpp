@@ -35,4 +35,15 @@ struct ValidationReport {
 [[nodiscard]] ValidationReport validate_reduction(const ValidationFiles& files,
                                                   std::size_t diagnostic_limit = 20);
 
+// Internal cross-basis experiment. Forward rows express new masters in the old
+// basis; reverse rows express old masters in the new basis. Common identity rows
+// may be omitted. Both inverse identities and C_old = C_new S are checked exactly.
+struct BasisChangeValidationFiles {
+  std::filesystem::path old_result, new_result, old_basis, new_basis;
+  std::filesystem::path new_in_old, old_in_new;
+};
+[[nodiscard]] ValidationReport
+validate_basis_change(const BasisChangeValidationFiles& files,
+                      std::size_t diagnostic_limit = 20);
+
 } // namespace validation

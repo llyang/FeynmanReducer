@@ -1025,11 +1025,18 @@ void BlackBoxFeynman::plan_direct_numerator_kernel(
         ReductionProgressEvent::info);
   }
 
-  publish_kernel_plan(
-      {std::move(indexed_basis), std::move(indexed_targets), std::move(indexed_ansatz),
-       std::move(metadata), std::move(row_sectors), std::move(row_groups),
-       std::move(ordered_groups), std::move(target_sectors),
-       std::move(selection.ansatz_order), std::move(selection.solution_columns),
-       std::move(selection.elimination_row_map), std::move(polynomial_values)},
-      coeffs, values);
+  publish_kernel_plan({std::move(indexed_basis),
+                       std::move(indexed_targets),
+                       std::move(indexed_ansatz),
+                       std::move(metadata),
+                       std::move(row_sectors),
+                       std::move(row_groups),
+                       std::move(ordered_groups),
+                       std::move(target_sectors),
+                       std::move(selection.ansatz_order),
+                       std::move(selection.solution_columns),
+                       std::move(selection.elimination_row_map),
+                       std::move(polynomial_values),
+                       {}},
+                      coeffs, values);
 }

@@ -1,6 +1,8 @@
 #pragma once
 
+#include "DSeparatingSearchStrategy.hpp"
 #include "NativeFixedBasisOracle.hpp"
+#include "SingleFactorExperiment.hpp"
 #include "core/Config.hpp"
 #include "reduction/ReductionProgress.hpp"
 
@@ -16,10 +18,21 @@
 
 namespace basis {
 
+struct SingleFactorTrialReport;
+
 struct DSeparatingBasisSearchOptions {
+  DSeparatingSearchStrategy strategy = DSeparatingSearchStrategy::SingleSlotThenScored;
+  // Optional incremental experiment trace; never enabled by the production CLI.
+  std::function<void(std::string_view)> experiment_trace;
+  std::function<void(const SingleFactorTrialReport&)> factor_trial_completed;
+  std::function<void(std::uint64_t, std::size_t,
+                     const factor_experiment::SequenceRound&)>
+      sequence_round_completed;
   unsigned maximum_candidate_dots = 2;
   std::size_t screening_target_limit = 8;
   std::size_t maximum_basis_states = 100000;
+  // First-stage cap; both stages still share maximum_basis_states.
+  std::size_t simple_search_maximum_basis_states = 64;
   std::size_t basis_beam_width = 8;
   std::size_t swap_shortlist = 64;
   std::size_t initial_dimension_samples = 16;
@@ -81,6 +94,7 @@ struct DMovingPoleWitness {
   std::size_t component = 0;
   std::uint32_t sector = 0;
   std::size_t mixed_degree = 0;
+  std::uint32_t master_sector = 0;
 };
 
 struct DSeparatingBasisProbeStatistics {
@@ -112,15 +126,54 @@ struct DSeparatingBasisTiming {
   double pointwise_rebase_seconds = 0.0;
   double rational_interpolation_seconds = 0.0;
   double signature_comparison_seconds = 0.0;
+  double rank_data_seconds = 0.0;
+  double rank_coordinates_seconds = 0.0;
+  double rank_pivot_seconds = 0.0;
+};
+
+struct SingleFactorTrialReport {
+  std::uint64_t prime = 0;
+  std::size_t kinematic_point = 0;
+  FieldVector kinematics;
+  FieldVector factor;
+  factor_experiment::SaturationResult saturation;
+  std::string target_status = "not_checked";
+  std::string validation_status = "not_checked";
+  std::vector<std::size_t> target_poles;
+  std::vector<Integral> selected_basis;
+  std::vector<DSeparatingBasisSwap> swap_path;
+};
+
+struct DSeparatingSearchStageReport {
+  DSeparatingSearchStrategy strategy = DSeparatingSearchStrategy::SingleSlot;
+  DSeparatingBasisSearchStatus status = DSeparatingBasisSearchStatus::NotFound;
+  std::string reason;
+  std::size_t budget = 0;
+  // Beam states in SingleSlot; attempted exchanges (including rollback) in Scored.
+  std::size_t states_used = 0;
+  DSeparatingBasisProbeStatistics probe_statistics;
+  DSeparatingBasisTiming timing;
 };
 
 struct DSeparatingBasisSearchReport {
+  std::vector<DSeparatingSearchStageReport> stages;
   DSeparatingBasisSearchStatus status = DSeparatingBasisSearchStatus::NotFound;
   std::vector<Integral> selected_basis;
   unsigned total_dots = 0;
   bool selected_basis_d_separating = false;
   std::size_t candidate_pool_size = 0;
   std::size_t basis_states_tested = 0;
+  std::size_t raw_pairs = 0;
+  std::size_t scored_pairs = 0;
+  std::size_t pair_sampling_failures = 0;
+  std::size_t beam_discarded = 0;
+  std::size_t seen_suppressed = 0;
+  std::vector<std::size_t> shortlisted_by_slot;
+  std::vector<SingleFactorTrialReport> factor_trials;
+  std::vector<factor_experiment::SequenceResult> factor_sequences;
+  std::vector<std::uint64_t> sequence_primes;
+  std::vector<std::size_t> sequence_anchors;
+  std::vector<FieldVector> sequence_kinematics;
   std::size_t swaps_scored = 0;
   std::size_t swaps_shortlisted = 0;
   std::size_t maximum_beam_depth = 0;
@@ -147,6 +200,8 @@ struct PreparedDSeparatingBasisSearch {
   // Full target-major/selected-basis-major positions retained after two-prime
   // support validation. These positions define the final FireFly output shape.
   std::vector<std::uint32_t> final_output_support;
+  // Canonical published basis position -> pointwise swap coordinate slot.
+  std::vector<std::size_t> selected_basis_to_swap_slot;
 };
 
 // A pointwise basis-change tape.  Each pivot vector is expressed in the basis
@@ -162,7 +217,7 @@ struct BasisSwapCoordinateTape {
 
 [[nodiscard]] std::optional<BasisSwapCoordinateTape> build_basis_swap_coordinate_tape(
     const PrimeField& field, std::span<const FieldVector> inserted_initial_coordinates,
-    std::span<const std::size_t> slots);
+    std::span<const std::size_t> slots, DSeparatingBasisTiming* timing = nullptr);
 
 [[nodiscard]] FieldVector
 rebase_after_basis_swaps(const PrimeField& field,
@@ -177,23 +232,3 @@ rebase_after_basis_swaps(const PrimeField& field,
     ReductionOptions reduction_options = {});
 
 } // namespace basis
-
-namespace quotient {
-using basis::BasisIntegralPool;
-using basis::BasisSwapCoordinateTape;
-using basis::build_basis_swap_coordinate_tape;
-using basis::DDenominatorSignature;
-using basis::DMovingPoleWitness;
-using basis::DSeparatingBasisProbeStatistics;
-using basis::DSeparatingBasisProgressCallback;
-using basis::DSeparatingBasisSearchOptions;
-using basis::DSeparatingBasisSearchReport;
-using basis::DSeparatingBasisSearchStatus;
-using basis::DSeparatingBasisSwap;
-using basis::DSeparatingBasisTiming;
-using basis::integral_dot_count;
-using basis::prepare_d_separating_basis_search;
-using basis::PreparedDSeparatingBasisSearch;
-using basis::rebase_after_basis_swap;
-using basis::rebase_after_basis_swaps;
-} // namespace quotient

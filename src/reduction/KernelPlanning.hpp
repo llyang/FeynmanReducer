@@ -1,12 +1,14 @@
 #pragma once
 
 #include "reduction/EquationGenerator.hpp"
+#include "reduction/ProvisionalCheckpoint.hpp"
 #include "reduction/ReductionOptions.hpp"
 
 #include <firefly/FFInt.hpp>
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -111,6 +113,25 @@ struct KernelPublicationInput {
   std::vector<std::size_t> solution_columns;
   std::vector<std::size_t> elimination_row_map;
   std::vector<firefly::FFInt> polynomial_values;
+  std::shared_ptr<ProvisionalCheckpoint> checkpoint;
+};
+
+// Preparation-only source containing all generated relations, including columns
+// not selected for the search kernel, with their original closure rows.
+// Expression ids belong to this source's immutable Top-LP catalogue. The source
+// stays intact across final-kernel planning retries.
+struct RecompactSource {
+  IndexedColumns integral_columns;
+  std::vector<Integral> integrals, initial_basis;
+  IndexedColumns ansatz_columns;
+  std::vector<AnsatzColumnMeta> ansatz_metadata;
+  std::vector<std::uint32_t> row_sectors, row_groups, ordered_groups, target_sectors;
+  std::vector<TopLpCoefficientExpression> expressions;
+  unsigned maximum_g_shift = 0;
+  AnsatzDotOrdering dot_ordering = AnsatzDotOrdering::LowFirst;
+  std::size_t retained_bytes = 0;
+  bool capture_provisional = false;
+  std::shared_ptr<const ProvisionalCheckpoint> checkpoint;
 };
 
 struct CompactPhaseTimings {
@@ -129,6 +150,8 @@ struct CompactPhaseTimings {
 };
 
 struct CompactSelection {
+  std::shared_ptr<ProvisionalCheckpoint> checkpoint;
+  bool reused_provisional = false;
   bool closed = false;
   std::vector<std::size_t> residual_rows;
   std::vector<std::vector<std::size_t>> residual_rhs_support;
@@ -164,7 +187,24 @@ struct CompactSelection {
     const firefly::FFInt& minus_half_d, std::span<const std::uint32_t> row_groups = {},
     std::span<const std::uint32_t> ordered_groups = {},
     AnsatzDotOrdering dot_ordering = AnsatzDotOrdering::Markowitz,
-    std::size_t planning_threads = 1, bool check_master_independence = false);
+    std::size_t planning_threads = 1, bool check_master_independence = false,
+    bool capture_provisional = false,
+    const ProvisionalCheckpoint* checkpoint = nullptr);
+
+struct LocalReselectionStatistics {
+  std::size_t envelope_rows = 0, eligible_relations = 0, added_relations = 0;
+  std::size_t selected_new_relations = 0;
+  bool attempted = false;
+  double initial_ms = 0.0, scan_ms = 0.0, reselect_ms = 0.0;
+};
+
+// Rechoose raw symbolic relations within the original support's row envelope.
+// Numerical checkpoint coefficients never enter the published relation source.
+[[nodiscard]] LocalReselectionStatistics reselect_compact_support(
+    CompactSelection& selection, const KernelPublicationInput& source,
+    std::span<const firefly::FFInt> top_lp_coefficients,
+    const firefly::FFInt& minus_half_d, AnsatzDotOrdering dot_ordering,
+    std::size_t planning_threads);
 
 template <typename Emit>
 void for_each_bilinear_weight(const IndexedTerm& term,

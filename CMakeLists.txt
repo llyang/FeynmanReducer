@@ -270,6 +270,7 @@ add_library(feynman_reducer_reduction STATIC
   src/basis/LpNormalization.cpp
   src/basis/NativeFixedBasisOracle.cpp
   src/basis/UnivariateSeparation.cpp
+  src/basis/SingleFactorExperiment.cpp
   src/reduction/BlackBoxFeynman.cpp
   src/reduction/BlockTriangular.cpp
   src/reduction/BlockReplayBuilder.cpp

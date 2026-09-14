@@ -18,6 +18,10 @@
 #include <type_traits>
 #include <vector>
 
+namespace reduction::detail {
+struct RecompactSource;
+}
+
 namespace basis {
 
 // FireFly-facing selected-basis view over the same fixed-initial-basis replay
@@ -43,6 +47,9 @@ public:
   {
     return original_targets_.size() * prepared_.report.selected_basis.size();
   }
+
+  [[nodiscard]] std::unique_ptr<reduction::detail::RecompactSource>
+  take_recompact_source();
 
   void prime_changed();
 
@@ -75,7 +82,9 @@ private:
   };
 
   DSeparatingReduction(PreparedDSeparatingBasisSearch prepared,
-                       std::vector<Integral> original_targets);
+                       std::vector<Integral> original_targets,
+                       DSeparatingSharedOptimization optimization,
+                       const ReductionProgressCallback& progress);
 
   [[nodiscard]] std::shared_ptr<const OutputSelectionPlan>
   build_selection_plan(std::span<const std::uint32_t> active_outputs);
@@ -100,7 +109,3 @@ private:
 };
 
 } // namespace basis
-
-namespace quotient {
-using basis::DSeparatingReduction;
-} // namespace quotient

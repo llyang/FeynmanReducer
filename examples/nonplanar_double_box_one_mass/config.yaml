@@ -28,7 +28,7 @@ integral_header: "F1"
 
 symmetry_backend: nauty
 
-basis_selection: "d-separating"
+basis_selection: "default"
 
 threads: 24
 factor_scan: true
