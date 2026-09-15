@@ -133,14 +133,10 @@ linalg::ColumnComplexityOrder complexity_order(AnsatzDotOrdering ordering)
   throw std::logic_error("unknown ansatz dot ordering");
 }
 
-struct ResidualSupport {
-  std::vector<std::size_t> rows;
-  std::vector<std::vector<std::size_t>> rhs_columns;
-};
-
 template <typename T>
-ResidualSupport collect_residual_rows(const linalg::EliminationResult& elimination,
-                                      std::span<const T> rhs, std::size_t rhs_columns)
+std::vector<std::size_t>
+collect_residual_rows(const linalg::EliminationResult& elimination,
+                      std::span<const T> rhs, std::size_t rhs_columns)
 {
   if (elimination.closed) return {};
   if (rhs_columns == 0 || rhs.size() % rhs_columns != 0)
@@ -151,17 +147,16 @@ ResidualSupport collect_residual_rows(const linalg::EliminationResult& eliminati
     throw std::logic_error("compact residual row map is inconsistent");
   }
 
-  ResidualSupport residual;
+  std::vector<std::size_t> residual;
   for (std::size_t position = elimination.solution_cols.size();
        position < elimination.row_map.size(); ++position) {
     const std::size_t row = elimination.row_map[position];
-    std::vector<std::size_t> support;
     for (std::size_t column = 0; column < rhs_columns; ++column) {
-      if (rhs[row * rhs_columns + column] != T(0)) support.push_back(column);
+      if (rhs[row * rhs_columns + column] != T(0)) {
+        residual.push_back(row);
+        break;
+      }
     }
-    if (support.empty()) continue;
-    residual.rows.push_back(row);
-    residual.rhs_columns.push_back(std::move(support));
   }
   return residual;
 }
@@ -405,8 +400,7 @@ CompactSelection plan_compact_kernel_impl(
       auto residual = collect_residual_rows(provisional_result,
                                             std::span<const T>(provisional_system.rhs),
                                             provisional_system.rhs_columns);
-      selection.residual_rows = std::move(residual.rows);
-      selection.residual_rhs_support = std::move(residual.rhs_columns);
+      selection.residual_rows = std::move(residual);
       selection.timings.total_ms = milliseconds(start, provisional_eliminated);
       return selection;
     }
@@ -529,11 +523,12 @@ CompactSelection plan_compact_kernel(
   return full;
 }
 
-LocalReselectionStatistics reselect_compact_support(
-    CompactSelection& selection, const KernelPublicationInput& source,
-    std::span<const firefly::FFInt> top_lp_coefficients,
-    const firefly::FFInt& minus_half_d, AnsatzDotOrdering dot_ordering,
-    std::size_t planning_threads)
+LocalReselectionStatistics
+reselect_compact_support(CompactSelection& selection,
+                         const KernelPublicationInput& source,
+                         std::span<const firefly::FFInt> top_lp_coefficients,
+                         const firefly::FFInt& minus_half_d,
+                         AnsatzDotOrdering dot_ordering, std::size_t planning_threads)
 {
   using Clock = std::chrono::steady_clock;
   const auto start = Clock::now();
@@ -551,7 +546,8 @@ LocalReselectionStatistics reselect_compact_support(
   statistics.initial_ms = selection.timings.total_ms;
   std::vector<bool> rows(row_count, false), original(relation_count, false);
   const auto mark = [&](std::span<const IndexedTerm> terms) {
-    for (const auto& term : terms) rows.at(term.row) = true;
+    for (const auto& term : terms)
+      rows.at(term.row) = true;
   };
   mark(source.basis_columns.terms);
   mark(source.target_columns.terms);
@@ -573,7 +569,8 @@ LocalReselectionStatistics reselect_compact_support(
   // Eligibility uses every symbolic term, including terms vanishing at this point.
   for (std::size_t id = 0; id < relation_count; ++id) {
     const auto terms = source.ansatz_columns.column(id);
-    if (std::ranges::all_of(terms, [&](const auto& term) { return rows.at(term.row); })) {
+    if (std::ranges::all_of(terms,
+                            [&](const auto& term) { return rows.at(term.row); })) {
       eligible.push_back(id);
       statistics.added_relations += !original[id];
     }
@@ -606,15 +603,18 @@ LocalReselectionStatistics reselect_compact_support(
   // Restrict the original order without changing its relative ordering.
   if (!source.ordered_groups.empty()) {
     std::vector<std::uint32_t> present;
-    for (const auto& meta : local.ansatz_metadata) present.push_back(ansatz_pivot_group(meta));
+    for (const auto& meta : local.ansatz_metadata)
+      present.push_back(ansatz_pivot_group(meta));
     std::ranges::sort(present);
     present.erase(std::unique(present.begin(), present.end()), present.end());
     auto supplied = source.ordered_groups;
     std::ranges::sort(supplied);
     if (std::ranges::adjacent_find(supplied) != supplied.end())
-      throw std::logic_error("local reselection source group order contains duplicates");
+      throw std::logic_error(
+          "local reselection source group order contains duplicates");
     for (auto group : source.ordered_groups)
-      if (std::ranges::binary_search(present, group)) local.ordered_groups.push_back(group);
+      if (std::ranges::binary_search(present, group))
+        local.ordered_groups.push_back(group);
     if (local.ordered_groups.size() != present.size())
       throw std::logic_error("local reselection source group order is incomplete");
   }
@@ -631,13 +631,15 @@ LocalReselectionStatistics reselect_compact_support(
     id = eligible.at(id);
     statistics.selected_new_relations += !original.at(id);
   }
-  for (auto& row : result.elimination_row_map) row = original_rows.at(row);
+  for (auto& row : result.elimination_row_map)
+    row = original_rows.at(row);
   if (result.closed) {
     // Publication expects a permutation of the full original row catalogue.
     for (std::size_t row = 0; row < row_count; ++row)
       if (!rows[row]) result.elimination_row_map.push_back(row);
   }
-  for (auto& row : result.residual_rows) row = original_rows.at(row);
+  for (auto& row : result.residual_rows)
+    row = original_rows.at(row);
   result.reused_provisional = true;
   result.timings.total_ms = statistics.initial_ms + elapsed(start);
   selection = std::move(result);

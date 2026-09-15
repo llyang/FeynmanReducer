@@ -26,7 +26,6 @@ namespace basis {
 
 struct NativeOracleEvaluation {
   FieldMatrix conventional;
-  FieldMatrix quotient_normalized;
   std::size_t selected_reconstructed_outputs = 0;
   bool replay_performed = false;
 };
@@ -54,12 +53,6 @@ public:
   };
 
   class PreparedComponents {
-  public:
-    [[nodiscard]] std::size_t replay_output_count() const
-    {
-      return active_outputs.size();
-    }
-
   private:
     friend class NativeFixedBasisOracle;
     std::weak_ptr<const int> owner;
@@ -84,7 +77,6 @@ public:
           ReplayOrientationPreference replay_orientation =
               ReplayOrientationPreference::Auto,
           std::span<const std::uint32_t> relation_source_sectors = {},
-          bool compute_quotient_normalized = true,
           ReductionOptions reduction_options = {});
 
   NativeFixedBasisOracle(const NativeFixedBasisOracle&) = delete;
@@ -115,14 +107,9 @@ public:
                 const PreparedRows& prepared_rows);
 
   // Evaluates a complete parameter vector that already follows Config::parameters.
-  // The vector overload is the zero-copy hot path used by DSeparatingReduction;
-  // the span overload is provided for other prepared callers.
+  // Uses the supplied vector without copying it.
   [[nodiscard]] std::optional<NativeOracleEvaluation>
   evaluate_rows(const std::vector<firefly::FFInt>& values,
-                const PreparedRows& prepared_rows);
-
-  [[nodiscard]] std::optional<NativeOracleEvaluation>
-  evaluate_rows(std::span<const firefly::FFInt> values,
                 const PreparedRows& prepared_rows);
 
   [[nodiscard]] std::unique_ptr<reduction::detail::RecompactSource>
@@ -144,14 +131,13 @@ public:
   [[nodiscard]] std::size_t total_output_count() const noexcept;
 
 private:
-  explicit NativeFixedBasisOracle(Config config, bool compute_quotient_normalized);
+  explicit NativeFixedBasisOracle(Config config);
 
   [[nodiscard]] std::optional<NativeOracleEvaluation>
   evaluate_complete_values(const std::vector<firefly::FFInt>& values,
                            const PreparedRows& prepared_rows);
 
   Config config_;
-  bool compute_quotient_normalized_ = true;
   std::vector<std::optional<FieldVector>> unit_rows_;
   std::unique_ptr<BlackBoxFeynman> black_box_;
   std::shared_ptr<const int> identity_ = std::make_shared<const int>(0);
@@ -162,8 +148,3 @@ private:
 };
 
 } // namespace basis
-
-namespace quotient {
-using basis::NativeFixedBasisOracle;
-using basis::NativeOracleEvaluation;
-} // namespace quotient

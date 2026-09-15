@@ -94,7 +94,7 @@ std::shared_ptr<const BlackBoxFeynman::ReplayVariant>
 BlackBoxFeynman::selected_replay_variant(
     std::span<const std::uint32_t> active_outputs) const
 {
-  if (rebuild_replay_policy == DSeparatingRebuildReplay::TargetRowsCached)
+  if (target_replay_policy == TargetReplayPolicy::TargetRowsCached)
     return cached_replay_variant(active_outputs);
   auto current = replay_variant.load(std::memory_order_acquire);
   if (current != nullptr &&
@@ -846,17 +846,17 @@ bool BlackBoxFeynman::retain_outputs(std::span<const std::uint32_t> active_outpu
   return true;
 }
 
-bool BlackBoxFeynman::configure_rebuild_replay(DSeparatingRebuildReplay policy)
+bool BlackBoxFeynman::configure_target_replay(TargetReplayPolicy policy)
 {
   if (!output_support_initialized)
-    throw std::logic_error("rebuild replay requires a prepared kernel");
+    throw std::logic_error("target replay requires a prepared kernel");
   std::lock_guard lock(replay_variant_mutex);
   replay_variant.store(nullptr, std::memory_order_release);
   replay_cache.store(nullptr, std::memory_order_release);
   master_replay_grouping = MasterReplayGrouping::Exact;
-  rebuild_replay_policy = replay_orientation == ReplayOrientation::Target
-                              ? policy
-                              : DSeparatingRebuildReplay::Exact;
+  target_replay_policy = replay_orientation == ReplayOrientation::Target
+                             ? policy
+                             : TargetReplayPolicy::Exact;
   return replay_orientation == ReplayOrientation::Target;
 }
 
@@ -868,7 +868,7 @@ bool BlackBoxFeynman::configure_master_replay(MasterReplayGrouping policy)
   std::lock_guard lock(replay_variant_mutex);
   replay_variant.store(nullptr, std::memory_order_release);
   replay_cache.store(nullptr, std::memory_order_release);
-  rebuild_replay_policy = DSeparatingRebuildReplay::Exact;
+  target_replay_policy = TargetReplayPolicy::Exact;
   master_replay_grouping = policy;
   return true;
 }

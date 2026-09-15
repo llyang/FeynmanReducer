@@ -88,18 +88,6 @@ template <typename Arithmetic, typename Capture>
   return true;
 }
 
-template <typename Arithmetic>
-[[nodiscard]] bool execute_matrix_tape_capture(std::vector<std::uint64_t>& matrix,
-                                               const CompiledTape& tape,
-                                               std::vector<std::uint64_t>& factors,
-                                               const Arithmetic& arithmetic)
-{
-  if (factors.size() < tape.groups.size()) factors.resize(tape.groups.size());
-  return execute_matrix_tape_capture_impl(
-      matrix, tape, arithmetic,
-      [&](std::size_t group, std::uint64_t factor) { factors[group] = factor; });
-}
-
 // Replays typed groups without per-instruction opcode dispatch. A false result
 // means that the finite-field point produced a zero pivot.
 template <typename Arithmetic>

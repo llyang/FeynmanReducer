@@ -267,10 +267,9 @@ add_library(feynman_reducer_reduction STATIC
   src/basis/DSeparatingBasisSearch.cpp
   src/basis/DSeparatingReduction.cpp
   src/basis/FiniteField.cpp
-  src/basis/LpNormalization.cpp
   src/basis/NativeFixedBasisOracle.cpp
   src/basis/UnivariateSeparation.cpp
-  src/basis/SingleFactorExperiment.cpp
+  src/basis/FactorSaturation.cpp
   src/reduction/BlackBoxFeynman.cpp
   src/reduction/BlockTriangular.cpp
   src/reduction/BlockReplayBuilder.cpp
@@ -278,7 +277,6 @@ add_library(feynman_reducer_reduction STATIC
   src/reduction/CompiledReplay.cpp
   src/reduction/CompactPlanner.cpp
   src/reduction/ConstantRationalReconstruction.cpp
-  src/reduction/DirectSeedExpansion.cpp
   src/reduction/ReferencePlanBuilder.cpp
   src/reduction/EquationGenerator.cpp
   src/reduction/ScaleReconstruction.cpp
@@ -286,9 +284,6 @@ add_library(feynman_reducer_reduction STATIC
   src/reduction/FireflyResultImport.cpp
   src/reduction/FeynmanReducer.cpp
   src/masters/detail/GlobalBasisSelector.cpp
-  src/reduction/JetEquationGenerator.cpp
-  src/reduction/JetKernelPlanner.cpp
-  src/reduction/JetSymmetryCanonicalizer.cpp
   src/reduction/KernelPlanner.cpp
   src/reduction/KernelPublication.cpp
   src/reduction/ProjectedSeedExpansion.cpp
@@ -360,15 +355,20 @@ target_link_libraries(FeynmanReducer PRIVATE
   feynman_reducer_warnings
 )
 
-add_executable(
-  reduction_validate
-  src/app/reduction_validate.cpp
+add_library(feynman_reducer_validation STATIC
   src/validation/ReductionValidator.cpp
+  src/validation/detail/ReductionParser.cpp
 )
+target_include_directories(feynman_reducer_validation PUBLIC src)
+target_link_libraries(feynman_reducer_validation
+  PUBLIC feynman_reducer_model
+  PRIVATE ZLIB::ZLIB feynman_reducer_warnings
+)
+
+add_executable(reduction_validate src/app/reduction_validate.cpp)
 target_link_libraries(reduction_validate PRIVATE
-  ZLIB::ZLIB
+  feynman_reducer_validation
   feynman_reducer_compiler
-  feynman_reducer_model
   feynman_reducer_warnings
 )
 
@@ -383,6 +383,7 @@ if(ipo_supported)
     feynman_reducer_masters
     feynman_reducer_output
     feynman_reducer_app_support
+    feynman_reducer_validation
     FeynmanReducer
     reduction_validate
     PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE

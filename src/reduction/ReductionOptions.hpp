@@ -4,11 +4,6 @@
 
 #include <cstddef>
 
-enum class NumeratorReductionStrategy {
-  Projected,
-  Direct,
-};
-
 enum class ReplayOrientationPreference {
   Auto,
   Target,
@@ -18,18 +13,6 @@ enum class ReplayOrientationPreference {
 enum class AnsatzDotOrdering {
   Auto,
   Markowitz,
-  LowFirst,
-  HighFirst,
-};
-
-enum class DirectGroupOrdering {
-  Auto,
-  ExactJet,
-  RankSector,
-  SectorRank,
-};
-
-enum class DirectRankOrdering {
   LowFirst,
   HighFirst,
 };
@@ -52,7 +35,8 @@ enum class DSeparatingKernelStrategy {
   ReuseProvisionalReselectFinalBasis,
 };
 
-[[nodiscard]] constexpr bool uses_provisional_checkpoint(DSeparatingKernelStrategy strategy)
+[[nodiscard]] constexpr bool
+uses_provisional_checkpoint(DSeparatingKernelStrategy strategy)
 {
   return strategy == DSeparatingKernelStrategy::ReuseProvisionalFinalBasis ||
          strategy == DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis;
@@ -69,19 +53,14 @@ enum class DSeparatingSharedOptimization {
   TrimKernel,
 };
 
-enum class DSeparatingRebuildReplay { Exact, TargetRows, TargetRowsCached };
+enum class TargetReplayPolicy { Exact = 0, TargetRows = 1, TargetRowsCached = 2 };
 
 // Master-oriented grouping policy; no extra replay cache.
 enum class MasterReplayGrouping { Exact, TargetRows, MasterColumns };
 
 struct ReductionOptions {
-  NumeratorReductionStrategy numerator_strategy = NumeratorReductionStrategy::Projected;
   ReplayOrientationPreference replay_orientation = ReplayOrientationPreference::Auto;
   AnsatzDotOrdering ansatz_dot_ordering = AnsatzDotOrdering::Auto;
-  bool force_direct_positive_targets = false;
-  unsigned direct_pinched_dot_halo = 1;
-  DirectGroupOrdering direct_group_ordering = DirectGroupOrdering::Auto;
-  DirectRankOrdering direct_rank_ordering = DirectRankOrdering::LowFirst;
   // Internal provenance: global selection already checked master independence.
   bool master_basis_globally_selected = false;
   // Auto resolves only at the reduction entrypoint; low-level prepare stays shared.
@@ -89,10 +68,9 @@ struct ReductionOptions {
   basis::DSeparatingSearchStrategy d_separating_search =
       basis::DSeparatingSearchStrategy::SingleSlotThenScored;
   DSeparatingKernelStrategy d_separating_kernel = DSeparatingKernelStrategy::Auto;
-  DSeparatingRebuildReplay d_separating_rebuild_replay =
-      DSeparatingRebuildReplay::TargetRowsCached;
+  TargetReplayPolicy d_separating_replay = TargetReplayPolicy::TargetRowsCached;
   // Default-basis replay policy; independent of D-separating search options.
-  DSeparatingRebuildReplay default_replay = DSeparatingRebuildReplay::TargetRows;
+  TargetReplayPolicy default_replay = TargetReplayPolicy::TargetRows;
   MasterReplayGrouping default_master_replay = MasterReplayGrouping::MasterColumns;
   DSeparatingSharedOptimization d_separating_shared =
       DSeparatingSharedOptimization::None;

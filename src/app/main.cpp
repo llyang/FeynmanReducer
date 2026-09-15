@@ -25,7 +25,6 @@ struct Options {
   std::filesystem::path basis_output;
   std::filesystem::path firefly_log_output;
   std::optional<unsigned> threads;
-  NumeratorReductionStrategy numerator_strategy = NumeratorReductionStrategy::Projected;
 };
 
 unsigned parse_threads(const std::string& text)
@@ -54,15 +53,6 @@ Options parse_arguments(int argc, char** argv)
       options.input = value();
     } else if (argument == "-j" || argument == "--threads") {
       options.threads = parse_threads(value());
-    } else if (argument == "--numerator-strategy") {
-      const std::string strategy = value();
-      if (strategy == "projected") {
-        options.numerator_strategy = NumeratorReductionStrategy::Projected;
-      } else if (strategy == "direct") {
-        options.numerator_strategy = NumeratorReductionStrategy::Direct;
-      } else {
-        throw std::runtime_error("numerator strategy must be 'projected' or 'direct'");
-      }
     } else if (argument == "-h" || argument == "--help") {
       std::cout << "Usage: FeynmanReducer [-i config.yaml] [-j N]\n";
       std::exit(0);
@@ -151,9 +141,8 @@ int main(int argc, char** argv)
     ReductionResult result =
         master_candidates.requires_global_selection()
             ? perform_reduction(std::move(config), std::move(master_candidates),
-                                reduction_progress, {options.numerator_strategy})
-            : perform_reduction_owned(std::move(config), reduction_progress,
-                                      {options.numerator_strategy});
+                                reduction_progress)
+            : perform_reduction_owned(std::move(config), reduction_progress);
     bool archived_firefly_log = false;
     timing.run_stage("Write output files", [&] {
       archived_firefly_log = firefly_log.finish();

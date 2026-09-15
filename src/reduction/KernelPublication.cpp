@@ -94,9 +94,6 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_from_source(
     ReductionProgressCallback progress, ReductionOptions options)
 {
   if (!source) throw std::invalid_argument("recompaction source is missing");
-  if (options.numerator_strategy != NumeratorReductionStrategy::Projected)
-    throw std::invalid_argument(
-        "final-basis recompaction only supports projected kernels");
   if (progress)
     progress(
         std::format("Recompact source: rows={}, relations={}, integral_columns={}, "
@@ -143,7 +140,7 @@ void BlackBoxFeynman::plan_from_source(const reduction::detail::RecompactSource&
   input.row_sectors = source.row_sectors;
   input.row_groups = source.row_groups;
   input.ordered_groups = source.ordered_groups;
-  const auto terms = reduction::detail::reduction_polynomial_terms(cfg);
+  const auto& terms = cfg.polynomial_terms;
   for (const auto& term : terms)
     input.polynomial_values.push_back(
         reduction::detail::evaluate_polynomial_coefficient(cfg, term, values));
@@ -167,13 +164,15 @@ void BlackBoxFeynman::plan_from_source(const reduction::detail::RecompactSource&
         selection, input, coeffs.top_lp_coefficients, coeffs.minus_half_d,
         source.dot_ordering, cfg.threads);
     if (progress)
-      progress(std::format("Local relation reselection: attempted={}, envelope_rows={}, "
-                           "eligible_relations={}, added_relations={}, selected_new_relations={}, "
-                           "closed={}, initial_ms={:.2f}, scan_ms={:.2f}, reselect_ms={:.2f}",
-                           local.attempted, local.envelope_rows, local.eligible_relations,
-                           local.added_relations, local.selected_new_relations, selection.closed,
-                           local.initial_ms, local.scan_ms, local.reselect_ms),
-               ReductionProgressEvent::info);
+      progress(
+          std::format(
+              "Local relation reselection: attempted={}, envelope_rows={}, "
+              "eligible_relations={}, added_relations={}, selected_new_relations={}, "
+              "closed={}, initial_ms={:.2f}, scan_ms={:.2f}, reselect_ms={:.2f}",
+              local.attempted, local.envelope_rows, local.eligible_relations,
+              local.added_relations, local.selected_new_relations, selection.closed,
+              local.initial_ms, local.scan_ms, local.reselect_ms),
+          ReductionProgressEvent::info);
   }
   if (checkpoint && !selection.closed) {
     if (progress)
@@ -187,10 +186,10 @@ void BlackBoxFeynman::plan_from_source(const reduction::detail::RecompactSource&
                  : "Provisional reuse accepted: projected physical RHS support",
              ReductionProgressEvent::info);
   if (!selection.closed) throw AnsatzClosureError();
-  kernel_statistics_.compact_policy = selection.reused_provisional
-                                          ? (local.attempted ? "local-reselect-final-basis"
-                                                             : "reuse-provisional-final-basis")
-                                          : "all-relations-final-basis";
+  kernel_statistics_.compact_policy =
+      selection.reused_provisional ? (local.attempted ? "local-reselect-final-basis"
+                                                      : "reuse-provisional-final-basis")
+                                   : "all-relations-final-basis";
   publish_ansatz_statistics(selection, input.ansatz_metadata, input.row_sectors.size(),
                             input.basis_columns.size() + input.ansatz_columns.size(), 0,
                             0, 0);

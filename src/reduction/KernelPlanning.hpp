@@ -44,20 +44,6 @@ namespace reduction::detail {
   return static_cast<std::uint32_t>(sum);
 }
 
-[[nodiscard]] inline std::span<const PolynomialTerm>
-reduction_polynomial_terms(const Config& config)
-{
-  return config.polynomial_terms;
-}
-
-[[nodiscard]] inline std::span<const PolynomialTerm>
-reduction_polynomial_terms(const Config& config, NumeratorReductionStrategy strategy)
-{
-  return strategy == NumeratorReductionStrategy::Direct
-             ? std::span<const PolynomialTerm>(config.extended_lp.polynomial_terms)
-             : std::span<const PolynomialTerm>(config.polynomial_terms);
-}
-
 struct IndexedTerm {
   std::uint32_t row;
   std::uint32_t polynomial_term_index;
@@ -140,7 +126,6 @@ struct CompactPhaseTimings {
   double provisional_build_ms = 0.0;
   double provisional_elimination_ms = 0.0;
   double provisional_relation_elimination_ms = 0.0;
-  double provisional_back_substitution_ms = 0.0;
   double provisional_score_refresh_ms = 0.0;
   double provisional_row_elimination_ms = 0.0;
   double support_selection_ms = 0.0;
@@ -154,7 +139,6 @@ struct CompactSelection {
   bool reused_provisional = false;
   bool closed = false;
   std::vector<std::size_t> residual_rows;
-  std::vector<std::vector<std::size_t>> residual_rhs_support;
   std::vector<std::size_t> ansatz_order;
   std::vector<std::size_t> solution_columns;
   std::vector<std::size_t> elimination_row_map;
@@ -200,11 +184,12 @@ struct LocalReselectionStatistics {
 
 // Rechoose raw symbolic relations within the original support's row envelope.
 // Numerical checkpoint coefficients never enter the published relation source.
-[[nodiscard]] LocalReselectionStatistics reselect_compact_support(
-    CompactSelection& selection, const KernelPublicationInput& source,
-    std::span<const firefly::FFInt> top_lp_coefficients,
-    const firefly::FFInt& minus_half_d, AnsatzDotOrdering dot_ordering,
-    std::size_t planning_threads);
+[[nodiscard]] LocalReselectionStatistics
+reselect_compact_support(CompactSelection& selection,
+                         const KernelPublicationInput& source,
+                         std::span<const firefly::FFInt> top_lp_coefficients,
+                         const firefly::FFInt& minus_half_d,
+                         AnsatzDotOrdering dot_ordering, std::size_t planning_threads);
 
 template <typename Emit>
 void for_each_bilinear_weight(const IndexedTerm& term,

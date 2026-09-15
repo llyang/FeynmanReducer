@@ -67,10 +67,6 @@ public:
   {
     return fmpq_is_one(value_) != 0;
   }
-  [[nodiscard]] bool is_integer() const
-  {
-    return fmpz_is_one(fmpq_denref(value_)) != 0;
-  }
   [[nodiscard]] const fmpq* raw() const
   {
     return value_;

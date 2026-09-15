@@ -22,8 +22,7 @@ void BlackBoxFeynman::build_pending_block_replay(
 {
   using T = firefly::FFInt;
   using reduction::detail::checked_add_i64;
-  const auto polynomial_terms =
-      reduction::detail::reduction_polynomial_terms(cfg, numerator_strategy);
+  const auto& polynomial_terms = cfg.polynomial_terms;
   const std::size_t num_params = reduction::detail::coefficient_parameter_count(cfg);
   const std::size_t num_bilinear_basis = 2 * num_params;
   const auto& indexed_basis_cols = input.basis_columns;
@@ -72,9 +71,7 @@ void BlackBoxFeynman::build_pending_block_replay(
       nonzero_target_sectors.end());
   kernel_statistics_.physical_target_rhs = num_targets;
   kernel_statistics_.target_sector_batches = nonzero_target_sectors.size();
-  if (numerator_strategy == NumeratorReductionStrategy::Direct) {
-    kernel_statistics_.block_layout = "jet-sector-scc";
-  } else if (!input.ordered_groups.empty()) {
+  if (!input.ordered_groups.empty()) {
     kernel_statistics_.block_layout = "g-layer-sector-scc";
   } else {
     kernel_statistics_.block_layout = "seed-sector-scc";

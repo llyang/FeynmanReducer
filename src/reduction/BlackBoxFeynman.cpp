@@ -27,17 +27,6 @@ constexpr std::size_t kProbeAttemptLimit = 128;
 constexpr std::size_t kValidationPointsPerPrime = 2;
 constexpr std::size_t kResidualProjectionCount = 2;
 
-[[nodiscard]] bool uses_direct_kernel(const Config& config,
-                                      const ReductionOptions& options)
-{
-  if (options.numerator_strategy != NumeratorReductionStrategy::Direct) return false;
-  if (options.force_direct_positive_targets) return true;
-  return std::ranges::any_of(config.targets, [](const auto& target) {
-    return std::ranges::any_of(target.indices,
-                               [](const int index) { return index < 0; });
-  });
-}
-
 [[nodiscard]] std::uint64_t mix_projection_seed(std::uint64_t value)
 {
   value += 0x9e3779b97f4a7c15ULL;
@@ -152,12 +141,8 @@ void require_same_results(const std::vector<firefly::FFInt>& reference,
 
 BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
                                  const reduction::detail::RecompactSource* source)
-    : cfg(config), numerator_strategy(options.numerator_strategy),
-      replay_orientation_preference(options.replay_orientation),
+    : cfg(config), replay_orientation_preference(options.replay_orientation),
       ansatz_dot_ordering(options.ansatz_dot_ordering),
-      direct_pinched_dot_halo(options.direct_pinched_dot_halo),
-      direct_group_ordering(options.direct_group_ordering),
-      direct_rank_ordering(options.direct_rank_ordering),
       check_master_independence(config.check_master_independence &&
                                 !options.master_basis_globally_selected)
 {
@@ -171,20 +156,10 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
       std::ranges::any_of(cfg.targets, [](const auto& target) {
         return std::ranges::any_of(target.indices, [](int index) { return index < 0; });
       });
-  // The direct-jet representation only differs from the projected compact LP
-  // representation when a target actually carries a boundary derivative.
-  // Falling back here also keeps all downstream polynomial-term selection on
-  // the single-layer projected topology for nonnegative target sets.
-  if (!has_negative_targets && !options.force_direct_positive_targets)
-    numerator_strategy = NumeratorReductionStrategy::Projected;
-  if (uses_recompact_source(options.d_separating_kernel) &&
-      numerator_strategy != NumeratorReductionStrategy::Projected)
-    throw std::invalid_argument(
-        "final-basis recompaction only supports projected kernels");
   if (source) {
     top_lp_target_plan.expressions = source->expressions;
     top_lp_target_plan.maximum_g_shift = source->maximum_g_shift;
-  } else if (numerator_strategy == NumeratorReductionStrategy::Projected) {
+  } else {
     top_lp_target_plan = compile_top_lp_target_plan(cfg);
     if (uses_recompact_source(options.d_separating_kernel)) {
       recompact_source_ = std::make_unique<reduction::detail::RecompactSource>();
@@ -194,8 +169,6 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
       recompact_source_->maximum_g_shift = top_lp_target_plan.maximum_g_shift;
     }
   }
-  kernel_statistics_.numerator_strategy =
-      numerator_strategy == NumeratorReductionStrategy::Direct ? "direct" : "projected";
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> product_ids;
   for (const auto& expression : top_lp_target_plan.expressions) {
     if (top_lp_expression_terms.size() > std::numeric_limits<std::uint32_t>::max())
@@ -247,8 +220,7 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
         "parameter coefficient basis size {} exceeds the supported limit {}",
         2 * coefficient_parameters, MAX_BILINEAR_BASIS));
   }
-  const bool uses_extended_lp =
-      has_negative_targets || numerator_strategy == NumeratorReductionStrategy::Direct;
+  const bool uses_extended_lp = has_negative_targets;
   lp_variable_count = uses_extended_lp ? cfg.integral_count : cfg.propagator_count;
   kernel_statistics_.lp_variable_count = lp_variable_count;
   auto compile_lp_programs = [&](const auto& integrals) {
@@ -354,8 +326,6 @@ void BlackBoxFeynman::publish_compact_statistics(
   kernel_statistics_.provisional_rhs_fallback = selection.provisional_rhs_fallback;
   kernel_statistics_.provisional_relation_elimination_seconds =
       selection.timings.provisional_relation_elimination_ms / 1000.0;
-  kernel_statistics_.provisional_back_substitution_seconds =
-      selection.timings.provisional_back_substitution_ms / 1000.0;
   kernel_statistics_.provisional_score_refresh_seconds =
       selection.timings.provisional_score_refresh_ms / 1000.0;
   kernel_statistics_.provisional_row_elimination_seconds =
@@ -426,7 +396,6 @@ BlackBoxFeynman::prepare(Config& config, const masters::MasterCandidateSet& cand
         "master preselection requires a global-selection candidate set");
   }
   options.master_basis_globally_selected = true;
-  const bool direct = uses_direct_kernel(config, options);
   const auto original_basis = config.basis;
   const auto selection_start = std::chrono::high_resolution_clock::now();
   try {
@@ -436,35 +405,12 @@ BlackBoxFeynman::prepare(Config& config, const masters::MasterCandidateSet& cand
         std::chrono::duration<double>(std::chrono::high_resolution_clock::now() -
                                       selection_start)
             .count();
-    if (direct && options.direct_group_ordering == DirectGroupOrdering::Auto)
-      options.direct_group_ordering = DirectGroupOrdering::ExactJet;
     if (progress) {
-      if (direct) {
-        const auto group_order = [&] {
-          switch (options.direct_group_ordering) {
-          case DirectGroupOrdering::Auto:
-            return "auto";
-          case DirectGroupOrdering::ExactJet:
-            return "exact-jet";
-          case DirectGroupOrdering::RankSector:
-            return "rank-sector";
-          case DirectGroupOrdering::SectorRank:
-            return "sector-rank";
-          }
-          return "unknown";
-        }();
-        progress(std::format("Direct master preselection: input={}, selected={}, "
-                             "group_order={}, elapsed_ms={:.2f}",
-                             candidates.integrals.size(), config.basis.size(),
-                             group_order, selection_elapsed * 1000.0),
-                 ReductionProgressEvent::info);
-      } else {
-        progress(std::format("Projected master preselection: input={}, selected={}, "
-                             "elapsed_ms={:.2f}",
-                             candidates.integrals.size(), config.basis.size(),
-                             selection_elapsed * 1000.0),
-                 ReductionProgressEvent::info);
-      }
+      progress(std::format("Projected master preselection: input={}, selected={}, "
+                           "elapsed_ms={:.2f}",
+                           candidates.integrals.size(), config.basis.size(),
+                           selection_elapsed * 1000.0),
+               ReductionProgressEvent::info);
       progress(std::format("Production kernel planning: basis={}, targets={}, "
                            "relation_source_sectors={}",
                            config.basis.size(), config.targets.size(),
@@ -491,9 +437,8 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
 {
   const auto primes = reduction::detail::usable_firefly_primes(config, 2);
 
-  const bool have_checkpoint =
-      source && source->checkpoint &&
-      uses_provisional_checkpoint(options.d_separating_kernel);
+  const bool have_checkpoint = source && source->checkpoint &&
+                               uses_provisional_checkpoint(options.d_separating_kernel);
   if (have_checkpoint &&
       source->checkpoint->parameters.size() != config.parameters.size())
     throw std::logic_error("checkpoint parameter shape mismatch");
@@ -526,10 +471,10 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
     try {
       const auto coeffs = candidate->evaluate_coefficients(values);
       if (source)
-        candidate->plan_from_source(*source, coeffs, values, progress,
-                                    reuse_checkpoint,
-                                    options.d_separating_kernel ==
-                                        DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis);
+        candidate->plan_from_source(
+            *source, coeffs, values, progress, reuse_checkpoint,
+            options.d_separating_kernel ==
+                DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis);
       else
         candidate->plan_kernel(coeffs, values, progress, relation_source_sectors);
       std::vector<std::vector<Monomial>>().swap(candidate->top_lp_target_plan.columns);
@@ -1158,7 +1103,7 @@ BlackBoxFeynman::eval_selected_compact(const std::vector<firefly::FFInt>& values
   if (active_outputs.empty()) return {};
   if (active_outputs.size() == replay_outputs.size()) return (*this)(values);
 
-  if (rebuild_replay_policy != DSeparatingRebuildReplay::Exact ||
+  if (target_replay_policy != TargetReplayPolicy::Exact ||
       master_replay_grouping != MasterReplayGrouping::Exact) {
     auto grouped = eval_grouped_outputs(values, active_outputs,
                                         master_replay_grouping ==

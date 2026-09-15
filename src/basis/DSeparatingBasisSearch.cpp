@@ -293,7 +293,7 @@ public:
         maximum_dimension_samples_(maximum_dimension_samples),
         oracle_(NativeFixedBasisOracle::prepare(
             std::move(config), std::move(initial_basis), std::move(native_progress),
-            ReplayOrientationPreference::Target, relation_source_sectors, false,
+            ReplayOrientationPreference::Target, relation_source_sectors,
             reduction_options)),
         executor_(oracle_->config().threads), progress_(progress)
   {
@@ -401,10 +401,11 @@ public:
         auto& job = pending[indices[local]];
         job.result = detail::evaluate_row_batch(missing_rows, [&](auto requested) {
           const auto selection = requested.size() == missing_rows.size()
-                                     ? prepared : oracle_->prepare_rows(requested);
+                                     ? prepared
+                                     : oracle_->prepare_rows(requested);
           return oracle_->evaluate_rows(this->dimension(prime, job.key.dimension),
-                                         this->kinematics(prime, job.key.kinematics),
-                                         *selection);
+                                        this->kinematics(prime, job.key.kinematics),
+                                        *selection);
         });
       });
     }
@@ -425,9 +426,8 @@ public:
     // Failure is a view of this request, not a property of the full point.
     // Successfully cached rows remain usable after another row fails.
     for (auto* destination : destinations)
-      destination->failed = std::ranges::any_of(rows, [&](auto row) {
-        return !destination->conventional[row].has_value();
-      });
+      destination->failed = std::ranges::any_of(
+          rows, [&](auto row) { return !destination->conventional[row].has_value(); });
 
     std::vector<const ProbeEvaluation*> result;
     result.reserve(destinations.size());
@@ -440,7 +440,6 @@ public:
   {
     return statistics_;
   }
-
 
   [[nodiscard]] std::unique_ptr<NativeFixedBasisOracle> release_oracle()
   {
@@ -475,9 +474,6 @@ struct MovingPoleInternal {
 
 struct SeparationDiagnostics {
   SeparationResult result = SeparationResult::SamplingFailure;
-  std::size_t bad_count = 0;
-  std::size_t mixed_degree = 0;
-  std::size_t samples_used = 0;
   std::optional<MovingPoleInternal> witness;
   std::vector<std::uint32_t> nonzero_output_support;
 };
@@ -585,7 +581,7 @@ public:
               std::vector<std::optional<FieldVector>>(target_rows.size())));
       std::vector<std::vector<std::optional<RationalFunction>>> functions(
           flat_count, std::vector<std::optional<RationalFunction>>(kinematic_points));
-      std::vector<std::optional<DDenominatorSignature>> signatures(flat_count);
+      std::vector<std::optional<FieldVector>> signatures(flat_count);
       bool complete = false;
       SeparationDiagnostics diagnostics;
       std::size_t previous_sample_count = 0;
@@ -713,7 +709,6 @@ public:
                 .count();
 
         diagnostics = {.result = SeparationResult::Passed,
-                       .samples_used = sample_count,
                        .witness = std::nullopt,
                        .nonzero_output_support = {}};
         const auto signature_started = std::chrono::steady_clock::now();
@@ -731,19 +726,16 @@ public:
             if (!reference) {
               reference = function->denominator;
             } else if (*reference != function->denominator) {
-              const auto target = flat / basis_size_;
-              const auto component = flat % basis_size_;
-              const auto mixed = moving_polynomial_degree(field, denominators);
-              ++diagnostics.bad_count;
-              diagnostics.mixed_degree += mixed;
               if (!diagnostics.witness) {
+                const auto target = flat / basis_size_;
+                const auto component = flat % basis_size_;
                 diagnostics.witness = MovingPoleInternal{
                     .target_row = target_rows[target],
                     .component = component,
                     .sector = masters::detail::integral_sector(
                         dataset_.config(),
                         dataset_.config().targets[target_rows[target]]),
-                    .mixed_degree = mixed};
+                    .mixed_degree = moving_polynomial_degree(field, denominators)};
               }
               break;
             }
@@ -794,7 +786,7 @@ public:
           for (std::size_t flat = 0; flat < flat_count; ++flat) {
             for (const auto& function : functions[flat])
               if (function && function->denominator.size() > 1) {
-                signatures[flat] = DDenominatorSignature{function->denominator};
+                signatures[flat] = function->denominator;
                 break;
               }
           }
@@ -813,36 +805,35 @@ public:
       if (prime == 0) first_prime_diagnostics = diagnostics;
       std::vector<std::size_t> degrees;
       std::vector<std::vector<bool>> supports;
-      std::vector<std::vector<std::pair<std::size_t, std::size_t>>> function_degrees(
-          flat_count,
-          std::vector<std::pair<std::size_t, std::size_t>>(kinematic_points));
       degrees.reserve(signatures.size());
       supports.reserve(signatures.size());
       for (const auto& signature : signatures) {
-        degrees.push_back(signature ? signature->coefficients.size() - 1 : 0);
+        degrees.push_back(signature ? signature->size() - 1 : 0);
         std::vector<bool> support;
         if (signature) {
-          support.reserve(signature->coefficients.size());
-          for (const auto coefficient : signature->coefficients)
+          support.reserve(signature->size());
+          for (const auto coefficient : *signature)
             support.push_back(coefficient != 0);
         } else {
           support.push_back(true);
         }
         supports.push_back(std::move(support));
       }
-      for (std::size_t flat = 0; flat < flat_count; ++flat)
-        for (std::size_t point = 0; point < kinematic_points; ++point) {
-          const auto& function = *functions[flat][point];
-          function_degrees[flat][point] = {function.numerator.size() - 1,
-                                           function.denominator.size() - 1};
-        }
       if (!reference_degrees) {
+        std::vector<std::vector<std::pair<std::size_t, std::size_t>>> function_degrees(
+            flat_count,
+            std::vector<std::pair<std::size_t, std::size_t>>(kinematic_points));
+        for (std::size_t flat = 0; flat < flat_count; ++flat)
+          for (std::size_t point = 0; point < kinematic_points; ++point) {
+            const auto& function = *functions[flat][point];
+            function_degrees[flat][point] = {function.numerator.size() - 1,
+                                             function.denominator.size() - 1};
+          }
         reference_degrees = std::move(degrees);
         reference_supports = std::move(supports);
         reference_function_degrees = std::move(function_degrees);
       } else if (*reference_degrees != degrees || *reference_supports != supports) {
         return {.result = SeparationResult::SamplingFailure,
-                .samples_used = diagnostics.samples_used,
                 .witness = std::nullopt,
                 .nonzero_output_support = {}};
       }
@@ -893,14 +884,7 @@ public:
     if (proposal_candidates.empty()) return {};
     std::vector<std::pair<std::size_t, std::size_t>> pairs;
     for (std::size_t candidate = 0; candidate < proposal_candidates.size(); ++candidate)
-      for (std::size_t j = 0; j < selected.size(); ++j) {
-        if (options_.strategy == DSeparatingSearchStrategy::SingleSlot &&
-            j != witness_slot)
-          continue;
-        if (masters::detail::integral_sector(dataset_.config(), pool[selected[j]]) ==
-            sector)
-          pairs.emplace_back(candidate, j);
-      }
+      pairs.emplace_back(candidate, witness_slot);
     raw_pairs_ += pairs.size();
     const auto witness_local = requested_rows.size();
     requested_rows.push_back(diagnostics.witness->target_row);
@@ -1051,22 +1035,13 @@ public:
     if (shortlisted_by_slot_.empty()) shortlisted_by_slot_.resize(basis_size_);
     for (const auto& proposal : result)
       ++shortlisted_by_slot_[proposal.slot];
-    if (options_.experiment_trace)
-      options_.experiment_trace(std::format(
-          "{{\"event\":\"proposals\",\"witness_row\":{},\"witness_slot\":{},\"master_"
-          "sector\":{},\"raw_pairs\":{},\"scored_pairs\":{},\"shortlisted\":{}}}",
-          diagnostics.witness->target_row, witness_slot, sector, pairs.size(),
-          std::ranges::count_if(scored, [](const auto& v) { return v.has_value(); }),
-          result.size()));
     return result;
   }
 
   std::size_t raw_pairs_ = 0, scored_pairs_ = 0, pair_sampling_failures_ = 0;
   std::vector<std::size_t> shortlisted_by_slot_;
-  std::vector<std::size_t> history_rows_;
 
-  using RationalRow = factor_experiment::RationalRow;
-  using RowScore = std::array<std::size_t, 3>;
+  using RationalRow = factor_saturation::RationalRow;
 
   std::optional<std::vector<RationalRow>>
   recover_rows(std::size_t prime, std::size_t point, std::span<const std::size_t> rows,
@@ -1131,7 +1106,7 @@ public:
         complete = false;
         return;
       }
-      result[row][slot] = factor_experiment::normalize(field, std::move(*function));
+      result[row][slot] = factor_saturation::normalize(field, std::move(*function));
     });
     analysis_statistics_.rational_interpolation_attempts += attempts;
     analysis_statistics_.thiele_attempts += attempts;
@@ -1143,37 +1118,8 @@ public:
     return result;
   }
 
-  RowScore score_rows(std::span<const DSeparatingBasisSwap> path,
-                      std::span<const std::size_t> rows,
-                      std::vector<std::size_t>* bad_rows = nullptr)
-  {
-    if (rows.empty()) return {};
-    std::vector<std::vector<RationalRow>> functions;
-    for (std::size_t point = 0; point < options_.kinematic_training_points; ++point) {
-      auto values = recover_rows(0, point, rows, path);
-      if (!values) return {std::numeric_limits<std::size_t>::max(), 0, 0};
-      functions.push_back(std::move(*values));
-    }
-    RowScore score{};
-    const PrimeField field(dataset_.primes().front());
-    for (std::size_t row = 0; row < rows.size(); ++row) {
-      std::size_t degree = 0;
-      for (std::size_t slot = 0; slot < basis_size_; ++slot) {
-        std::vector<FieldVector> denominators;
-        for (const auto& point : functions)
-          denominators.push_back(point[row][slot].denominator);
-        degree = std::max(degree, moving_polynomial_degree(field, denominators));
-      }
-      if (degree && bad_rows) bad_rows->push_back(rows[row]);
-      score[0] += degree != 0;
-      score[1] = std::max(score[1], degree);
-      score[2] += degree;
-    }
-    return score;
-  }
-
   std::vector<DSeparatingBasisSwap>
-  factor_path(std::span<const factor_experiment::Step> steps,
+  factor_path(std::span<const factor_saturation::Step> steps,
               std::span<const std::size_t> initial, std::span<const Integral> pool)
   {
     std::vector<DSeparatingBasisSwap> result;
@@ -1189,167 +1135,13 @@ public:
     return result;
   }
 
-  std::vector<SingleFactorTrialReport>
-  single_factor_trials(std::span<const std::size_t> initial,
-                       std::span<const Integral> pool, std::size_t witness,
-                       const std::function<void(SingleFactorTrialReport&)>& validate)
-  {
-    std::vector<SingleFactorTrialReport> trials;
-    std::vector<std::uint32_t> sectors;
-    for (const auto& integral : pool)
-      sectors.push_back(masters::detail::integral_sector(dataset_.config(), integral));
-    const std::array witness_rows{witness};
-    for (std::size_t prime = 0; prime < dataset_.primes().size(); ++prime) {
-      const PrimeField field(dataset_.primes()[prime]);
-      std::vector<RationalRow> witness_functions;
-      for (std::size_t point = 0; point < options_.kinematic_training_points; ++point) {
-        auto row = recover_rows(prime, point, witness_rows, {});
-        if (!row) break;
-        witness_functions.push_back(std::move(row->front()));
-      }
-      if (witness_functions.size() != options_.kinematic_training_points) {
-        SingleFactorTrialReport trial;
-        trial.prime = field.prime();
-        trial.saturation.status = "factor_identification_incomplete";
-        trials.push_back(std::move(trial));
-        continue;
-      }
-      std::vector<FieldVector> factors;
-      std::size_t anchor = 0;
-      for (; anchor < witness_functions.size(); ++anchor) {
-        for (std::size_t slot = 0; slot < basis_size_; ++slot) {
-          std::vector<FieldVector> denominators;
-          for (const auto& row : witness_functions)
-            denominators.push_back(row[slot].denominator);
-          const auto part =
-              factor_experiment::noncommon_part(field, denominators, anchor);
-          for (auto h : factor_experiment::factors(field, part))
-            if (std::ranges::find(factors, h) == factors.end())
-              factors.push_back(std::move(h));
-        }
-        if (!factors.empty()) break;
-      }
-      std::ranges::sort(factors, [](const auto& a, const auto& b) {
-        return std::tuple{a.size(), a} < std::tuple{b.size(), b};
-      });
-      if (factors.empty()) {
-        SingleFactorTrialReport trial;
-        trial.prime = field.prime();
-        trial.saturation.status = "no_sampled_moving_factor";
-        trials.push_back(std::move(trial));
-        continue;
-      }
-      std::map<std::size_t, std::optional<RationalRow>> initial_cache;
-      for (std::size_t slot = 0; slot < initial.size(); ++slot) {
-        RationalRow identity(basis_size_, RationalFunction{{0}, {1}});
-        identity[slot] = {{1}, {1}};
-        initial_cache.emplace(candidate_rows_[initial[slot]], std::move(identity));
-      }
-      const auto get_row = [&](std::size_t row) -> std::optional<RationalRow> {
-        auto it = initial_cache.find(row);
-        if (it != initial_cache.end()) return it->second;
-        const std::array requested{row};
-        auto recovered = recover_rows(prime, anchor, requested, {});
-        std::optional<RationalRow> value;
-        if (recovered) value = std::move(recovered->front());
-        initial_cache.emplace(row, value);
-        return value;
-      };
-      const factor_experiment::RowProvider provider = [&](std::size_t c) {
-        return get_row(candidate_rows_[c]);
-      };
-      for (const auto& h : factors) {
-        SingleFactorTrialReport trial;
-        trial.prime = field.prime();
-        trial.kinematic_point = anchor;
-        trial.kinematics = dataset_.kinematics(prime, anchor);
-        trial.factor = h;
-        if (options_.experiment_trace)
-          options_.experiment_trace(std::format(
-              "{{\"event\":\"factor_start\",\"prime\":{},\"anchor\":{},\"degree\":{}}}",
-              field.prime(), anchor, h.size() - 1));
-        const auto choose = [&](std::size_t candidate,
-                                std::span<const std::size_t> allowed,
-                                std::span<const factor_experiment::Step> steps) {
-          if (allowed.size() == 1) return allowed.front();
-          const auto path = factor_path(steps, initial, pool);
-          const std::array requested{candidate_rows_[candidate]};
-          std::vector<RationalRow> functions;
-          for (std::size_t point = 0; point < options_.kinematic_training_points;
-               ++point) {
-            auto row = recover_rows(prime, point, requested, path);
-            if (!row)
-              return allowed
-                  .front(); // deterministic tie only; not evidence of stability
-            functions.push_back(std::move(row->front()));
-          }
-          const auto score = [&](std::size_t slot) {
-            std::vector<FieldVector> numerators;
-            std::size_t degree = 0;
-            for (const auto& row : functions) {
-              numerators.push_back(row[slot].numerator);
-              degree = std::max(degree, row[slot].numerator.size() - 1);
-            }
-            return std::tuple{!stable_polynomial_signatures(field, numerators),
-                              moving_polynomial_degree(field, numerators), degree,
-                              slot};
-          };
-          return *std::ranges::min_element(
-              allowed, [&](auto a, auto b) { return score(a) < score(b); });
-        };
-        trial.saturation = factor_experiment::saturate(
-            field, h, initial, sectors, provider, choose, [&](const auto& state) {
-              if (options_.experiment_trace)
-                options_.experiment_trace(std::format(
-                    "{{\"event\":\"factor_step\",\"prime\":{},\"steps\":{},\"covered\":"
-                    "{},\"regular\":{},\"candidate\":{},\"slot\":{},\"valuation\":{}}}",
-                    field.prime(), state.steps.size(), state.covered, state.regular,
-                    state.steps.back().candidate, state.steps.back().slot,
-                    state.steps.back().pivot_valuation));
-            });
-        trial.swap_path = factor_path(trial.saturation.steps, initial, pool);
-        for (auto c : trial.saturation.selected)
-          trial.selected_basis.push_back(pool[c]);
-        if (trial.saturation.status == "candidate_pool_regular") {
-          trial.target_status = "regular";
-          for (std::size_t target = 0; target < validation_rows_.size(); ++target) {
-            auto row = get_row(validation_rows_[target]);
-            if (!row) {
-              trial.target_status = "interpolation_incomplete";
-              break;
-            }
-            *row = factor_experiment::apply_steps(field, std::move(*row),
-                                                  trial.saturation.steps, provider);
-            if (std::ranges::any_of(*row, [&](const auto& x) {
-                  return factor_experiment::valuation(field, x, h) < 0;
-                }))
-              trial.target_poles.push_back(target);
-          }
-          if (trial.target_status != "interpolation_incomplete" &&
-              !trial.target_poles.empty())
-            trial.target_status = "sampled_pool_insufficient";
-        }
-        if (trial.saturation.status != "interpolation_incomplete") validate(trial);
-        if (options_.experiment_trace)
-          options_.experiment_trace(
-              std::format("{{\"event\":\"factor_end\",\"prime\":{},\"status\":\"{}\","
-                          "\"target_status\":\"{}\",\"validation\":\"{}\"}}",
-                          field.prime(), trial.saturation.status, trial.target_status,
-                          trial.validation_status));
-        if (options_.factor_trial_completed) options_.factor_trial_completed(trial);
-        trials.push_back(std::move(trial));
-      }
-    }
-    return trials;
-  }
-
   void sequential_factors(
       std::span<const std::size_t> initial, std::span<const Integral> pool,
       DSeparatingBasisSearchReport& report,
       const std::function<std::string(std::span<const std::size_t>,
                                       std::span<const DSeparatingBasisSwap>)>& validate)
   {
-    namespace fx = factor_experiment;
+    namespace fx = factor_saturation;
     std::vector<std::uint32_t> sectors;
     for (const auto& integral : pool)
       sectors.push_back(masters::detail::integral_sector(dataset_.config(), integral));
@@ -1397,8 +1189,6 @@ public:
         report.factor_sequences.push_back(std::move(failed));
         continue;
       }
-      const bool scored_mode =
-          options_.strategy == DSeparatingSearchStrategy::SequentialFactorsScored;
       double score_data_seconds = 0, score_coordinate_seconds = 0;
       std::map<std::pair<std::size_t, std::size_t>, std::optional<RationalRow>>
           originals;
@@ -1410,7 +1200,7 @@ public:
                             std::move(identity));
         }
       const auto prefetch_originals = [&](std::size_t point,
-                                            std::span<const std::size_t> physical) {
+                                          std::span<const std::size_t> physical) {
         std::vector<std::size_t> missing;
         for (const auto row : physical)
           if (!originals.contains({point, row})) missing.push_back(row);
@@ -1422,11 +1212,14 @@ public:
           locations.push_back({point, d});
         const auto started = std::chrono::steady_clock::now();
         for (std::size_t begin = 0; begin < missing.size(); begin += 32)
-          (void)dataset_.evaluations(prime, locations,
+          (void)dataset_.evaluations(
+              prime, locations,
               std::span<const std::size_t>(missing).subspan(
-                  begin, std::min<std::size_t>(32, missing.size()-begin)), true);
-        const auto elapsed = std::chrono::duration<double>(
-            std::chrono::steady_clock::now()-started).count();
+                  begin, std::min<std::size_t>(32, missing.size() - begin)),
+              true);
+        const auto elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
+                .count();
         score_data_seconds += elapsed;
         work_timing_.probe_evaluation_seconds += elapsed;
       };
@@ -1454,9 +1247,9 @@ public:
       };
       const fx::RowPrefetch prefetch = [&](std::size_t begin, std::size_t count) {
         std::vector<std::size_t> physical;
-        for (auto row = begin; row < begin+count; ++row)
+        for (auto row = begin; row < begin + count; ++row)
           physical.push_back(row < pool.size() ? candidate_rows_[row]
-                                               : validation_rows_[row-pool.size()]);
+                                               : validation_rows_[row - pool.size()]);
         prefetch_originals(anchor, physical);
       };
       bool first_scan = true;
@@ -1466,32 +1259,6 @@ public:
           return first;
         }
         return scan_at(steps, anchor);
-      };
-      const fx::SlotChoice choose = [&](std::size_t candidate,
-                                        std::span<const std::size_t> slots,
-                                        std::span<const fx::Step> steps) {
-        if (slots.size() == 1) return slots.front();
-        auto path = factor_path(steps, initial, pool);
-        const std::array requested{candidate_rows_[candidate]};
-        std::vector<RationalRow> functions;
-        for (std::size_t point = 0; point < options_.kinematic_training_points;
-             ++point) {
-          auto row = recover_rows(prime, point, requested, path);
-          if (!row) return slots.front();
-          functions.push_back(std::move(row->front()));
-        }
-        const auto score = [&](std::size_t slot) {
-          std::vector<FieldVector> numerators;
-          std::size_t degree = 0;
-          for (const auto& row : functions) {
-            numerators.push_back(row[slot].numerator);
-            degree = std::max(degree, row[slot].numerator.size() - 1);
-          }
-          return std::tuple{!stable_polynomial_signatures(field, numerators),
-                            moving_polynomial_degree(field, numerators), degree, slot};
-        };
-        return *std::ranges::min_element(
-            slots, [&](auto a, auto b) { return score(a) < score(b); });
       };
       struct ScoredRow {
         std::optional<RationalRow> value;
@@ -1539,77 +1306,69 @@ public:
         }
         return advance(physical);
       };
-      fx::PairScorer pair_scorer;
-      if (scored_mode)
-        pair_scorer = [&](std::span<const fx::PivotPair> pairs,
-                          std::span<const fx::Step> steps) {
-          const auto data_before = score_data_seconds;
-          const auto coordinates_before = score_coordinate_seconds;
-          fx::PairScores result;
-          // Each unique candidate is recovered once per point; all slots share it.
-          std::map<std::size_t, std::vector<RationalRow>> functions;
-          std::vector<std::size_t> active;
-          for (const auto& pair : pairs)
-            if (functions.try_emplace(pair.candidate).second) active.push_back(pair.candidate);
-          for (std::size_t point = 0; point < options_.kinematic_training_points; ++point) {
-            std::vector<std::size_t> physical;
-            // Lazy coordinate advancement may need prefix pivot rows as well.
-            for (const auto& step : steps) physical.push_back(candidate_rows_[step.candidate]);
-            for (auto candidate : active) physical.push_back(candidate_rows_[candidate]);
-            if (active.empty()) break;
-            prefetch_originals(point, physical);
-            std::vector<std::size_t> remaining;
-            for (auto candidate : active) {
-              auto row = current_scored_row(point, candidate_rows_[candidate], steps);
-              if (!row) functions[candidate].clear();
-              else {
-                functions[candidate].push_back(std::move(*row));
-                remaining.push_back(candidate);
-              }
+      const fx::PairScorer pair_scorer = [&](std::span<const fx::PivotPair> pairs,
+                                             std::span<const fx::Step> steps) {
+        const auto data_before = score_data_seconds;
+        const auto coordinates_before = score_coordinate_seconds;
+        fx::PairScores result;
+        // Each unique candidate is recovered once per point; all slots share it.
+        std::map<std::size_t, std::vector<RationalRow>> functions;
+        std::vector<std::size_t> active;
+        for (const auto& pair : pairs)
+          if (functions.try_emplace(pair.candidate).second)
+            active.push_back(pair.candidate);
+        for (std::size_t point = 0; point < options_.kinematic_training_points;
+             ++point) {
+          std::vector<std::size_t> physical;
+          // Lazy coordinate advancement may need prefix pivot rows as well.
+          for (const auto& step : steps)
+            physical.push_back(candidate_rows_[step.candidate]);
+          for (auto candidate : active)
+            physical.push_back(candidate_rows_[candidate]);
+          if (active.empty()) break;
+          prefetch_originals(point, physical);
+          std::vector<std::size_t> remaining;
+          for (auto candidate : active) {
+            auto row = current_scored_row(point, candidate_rows_[candidate], steps);
+            if (!row)
+              functions[candidate].clear();
+            else {
+              functions[candidate].push_back(std::move(*row));
+              remaining.push_back(candidate);
             }
-            active = std::move(remaining);
           }
-          for (const auto& pair : pairs) {
-            auto it = functions.find(pair.candidate);
-            fx::NumeratorScore score;
-            if (!it->second.empty()) {
-              std::vector<FieldVector> numerators;
-              bool nonzero = true;
-              for (const auto& row : it->second) {
-                numerators.push_back(row[pair.slot].numerator);
-                nonzero &= numerators.back() != FieldVector{0};
-                score.degree = std::max(score.degree, numerators.back().size() - 1);
-              }
-              if (nonzero) {
-                score.classification =
-                    stable_polynomial_signatures(field, numerators) ? 0 : 1;
-                score.moving_degree = moving_polynomial_degree(field, numerators);
-              }
+          active = std::move(remaining);
+        }
+        for (const auto& pair : pairs) {
+          auto it = functions.find(pair.candidate);
+          fx::NumeratorScore score;
+          if (!it->second.empty()) {
+            std::vector<FieldVector> numerators;
+            bool nonzero = true;
+            for (const auto& row : it->second) {
+              numerators.push_back(row[pair.slot].numerator);
+              nonzero &= numerators.back() != FieldVector{0};
+              score.degree = std::max(score.degree, numerators.back().size() - 1);
             }
-            result.values.push_back(score);
+            if (nonzero) {
+              score.classification =
+                  stable_polynomial_signatures(field, numerators) ? 0 : 1;
+              score.moving_degree = moving_polynomial_degree(field, numerators);
+            }
           }
-          result.data_seconds = score_data_seconds - data_before;
-          result.coordinate_seconds = score_coordinate_seconds - coordinates_before;
-          return result;
-        };
+          result.values.push_back(score);
+        }
+        result.data_seconds = score_data_seconds - data_before;
+        result.coordinate_seconds = score_coordinate_seconds - coordinates_before;
+        return result;
+      };
       auto sequence = fx::sequential(
-          field, initial, sectors, validation_rows_.size(), provider, finder, choose,
+          field, initial, sectors, validation_rows_.size(), provider, finder,
           [&](std::span<const std::size_t> selected, std::span<const fx::Step> steps) {
             auto path = factor_path(steps, initial, pool);
             return validate(selected, path);
           },
-          remaining,
-          [&](const fx::SequenceRound& round) {
-            if (options_.experiment_trace)
-              options_.experiment_trace(std::format(
-                  "{{\"event\":\"sequence_round\",\"prime\":{},\"anchor\":{},"
-                  "\"status\":\"{}\",\"swaps\":{},\"total_swaps\":{}}}",
-                  field.prime(), anchor, round.status, round.saturation.steps.size(),
-                  round.cumulative_steps.size()));
-            if (options_.sequence_round_completed)
-              options_.sequence_round_completed(field.prime(), anchor, round);
-          },
-          pair_scorer, prefetch);
+          remaining, pair_scorer, prefetch);
       remaining -= sequence.states_used;
       report.basis_states_tested += sequence.states_used;
       const auto status = sequence.status;
@@ -1835,13 +1594,14 @@ BasisIntegralPool BasisIntegralPool::build(const TopologyConfig& topology,
 
 namespace {
 
-PreparedDSeparatingBasisSearch run_search_stage(
-    NativeBasisProbeDataset& dataset, const BasisIntegralPool& pool,
-    const std::vector<std::size_t>& initial_candidate_ids,
-    std::span<const std::size_t> candidate_rows,
-    std::span<const std::size_t> screening_rows,
-    std::span<const std::size_t> validation_rows,
-    const DSeparatingBasisSearchOptions& options, BasisSearchProgress& progress)
+PreparedDSeparatingBasisSearch
+run_search_stage(NativeBasisProbeDataset& dataset, const BasisIntegralPool& pool,
+                 const std::vector<std::size_t>& initial_candidate_ids,
+                 std::span<const std::size_t> candidate_rows,
+                 std::span<const std::size_t> screening_rows,
+                 std::span<const std::size_t> validation_rows,
+                 const DSeparatingBasisSearchOptions& options,
+                 BasisSearchProgress& progress)
 {
   const auto search_started = std::chrono::steady_clock::now();
   const auto initial_statistics = dataset.statistics();
@@ -1869,12 +1629,17 @@ PreparedDSeparatingBasisSearch run_search_stage(
     report.probe_statistics = dataset.statistics();
     report.probe_statistics.logical_requests -= initial_statistics.logical_requests;
     report.probe_statistics.full_cache_hits -= initial_statistics.full_cache_hits;
-    report.probe_statistics.requested_target_rows -= initial_statistics.requested_target_rows;
+    report.probe_statistics.requested_target_rows -=
+        initial_statistics.requested_target_rows;
     report.probe_statistics.cached_target_rows -= initial_statistics.cached_target_rows;
-    report.probe_statistics.replayed_target_rows -= initial_statistics.replayed_target_rows;
-    report.probe_statistics.selected_replay_calls -= initial_statistics.selected_replay_calls;
-    report.probe_statistics.selected_compact_outputs -= initial_statistics.selected_compact_outputs;
-    report.probe_statistics.skipped_compact_outputs -= initial_statistics.skipped_compact_outputs;
+    report.probe_statistics.replayed_target_rows -=
+        initial_statistics.replayed_target_rows;
+    report.probe_statistics.selected_replay_calls -=
+        initial_statistics.selected_replay_calls;
+    report.probe_statistics.selected_compact_outputs -=
+        initial_statistics.selected_compact_outputs;
+    report.probe_statistics.skipped_compact_outputs -=
+        initial_statistics.skipped_compact_outputs;
 
     const auto& analysis = checker.analysis_statistics();
     report.probe_statistics.rational_interpolation_attempts =
@@ -1913,8 +1678,6 @@ PreparedDSeparatingBasisSearch run_search_stage(
     std::size_t child_mixed_degree = 0;
     std::size_t pivot_mixed_degree = 0;
     std::size_t pivot_numerator_degree = 0;
-    TrialBasisChecker::RowScore row_score{};
-    std::size_t history_version = 0;
   };
   const auto state_key = [](const SearchState& state) {
     auto key = state.selected;
@@ -1928,16 +1691,21 @@ PreparedDSeparatingBasisSearch run_search_stage(
     return result;
   };
   const auto state_less = [&](const SearchState& lhs, const SearchState& rhs) {
-    return std::tuple{lhs.row_score,          lhs.repairs_primary ? 0U : 1U,
-                      lhs.child_mixed_degree, lhs.pivot_numerator_stable ? 0U : 1U,
-                      lhs.pivot_mixed_degree, lhs.pivot_numerator_degree,
-                      lhs.path.size(),        state_dots(lhs),
-                      state_key(lhs)} <
-           std::tuple{rhs.row_score,          rhs.repairs_primary ? 0U : 1U,
-                      rhs.child_mixed_degree, rhs.pivot_numerator_stable ? 0U : 1U,
-                      rhs.pivot_mixed_degree, rhs.pivot_numerator_degree,
-                      rhs.path.size(),        state_dots(rhs),
-                      state_key(rhs)};
+    return std::tuple{lhs.repairs_primary ? 0U : 1U,
+                      lhs.child_mixed_degree,
+                      lhs.pivot_numerator_stable ? 0U : 1U,
+                      lhs.pivot_mixed_degree,
+                      lhs.pivot_numerator_degree,
+                      lhs.path.size(),
+                      state_dots(lhs),
+                      state_key(lhs)} < std::tuple{rhs.repairs_primary ? 0U : 1U,
+                                                   rhs.child_mixed_degree,
+                                                   rhs.pivot_numerator_stable ? 0U : 1U,
+                                                   rhs.pivot_mixed_degree,
+                                                   rhs.pivot_numerator_degree,
+                                                   rhs.path.size(),
+                                                   state_dots(rhs),
+                                                   state_key(rhs)};
   };
 
   std::vector<SearchState> frontier{{
@@ -1950,8 +1718,7 @@ PreparedDSeparatingBasisSearch run_search_stage(
   bool budget_exhausted = false;
   progress.event("initial-basis", "starting factor-directed basis discovery");
 
-  if ((options.strategy == DSeparatingSearchStrategy::SequentialFactors ||
-       options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored)) {
+  if (options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored) {
     progress.set_stage("sequential-factors");
     checker.sequential_factors(
         initial_candidate_ids, pool.integrals, report,
@@ -1981,59 +1748,7 @@ PreparedDSeparatingBasisSearch run_search_stage(
     });
     frontier.clear();
   }
-  if (options.strategy == DSeparatingSearchStrategy::SingleFactorDiagnostic) {
-    auto diagnostic = checker.diagnose(initial_candidate_ids, {}, false);
-    ++report.basis_states_tested;
-    if (diagnostic.result == SeparationResult::Passed) {
-      diagnostic = strict_validate(initial_candidate_ids, {});
-      ++report.strict_validations;
-      if (diagnostic.result == SeparationResult::Passed) {
-        solution = frontier.front();
-        solution_diagnostics = diagnostic;
-      }
-    }
-    if (diagnostic.witness) {
-      report.primary_witness = DMovingPoleWitness{
-          .target = prepared_config.targets[diagnostic.witness->target_row],
-          .component = diagnostic.witness->component,
-          .sector = diagnostic.witness->sector,
-          .mixed_degree = diagnostic.witness->mixed_degree,
-          .master_sector = masters::detail::integral_sector(
-              prepared_config,
-              pool.integrals[initial_candidate_ids[diagnostic.witness->component]])};
-      report.factor_trials = checker.single_factor_trials(
-          initial_candidate_ids, pool.integrals, diagnostic.witness->target_row,
-          [&](SingleFactorTrialReport& trial) {
-            ++report.basis_states_tested;
-            if (!checker.rank_complete(trial.saturation.selected, trial.swap_path)) {
-              trial.validation_status = "rank_sample_failure";
-              return;
-            }
-            ++report.strict_validations;
-            auto checked = strict_validate(trial.saturation.selected, trial.swap_path);
-            trial.validation_status =
-                checked.result == SeparationResult::Passed       ? "passed"
-                : checked.result == SeparationResult::MovingPole ? "moving_pole"
-                                                                 : "sampling_failure";
-            if (checked.result == SeparationResult::Passed && !solution) {
-              SearchState state;
-              state.selected = trial.saturation.selected;
-              state.path = trial.swap_path;
-              solution = std::move(state);
-              solution_diagnostics = std::move(checked);
-            }
-          });
-    } else if (!solution)
-      ++report.sampling_rejects;
-    frontier.clear();
-  }
   while (!frontier.empty()) {
-    if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory)
-      for (auto& pending : frontier)
-        if (pending.history_version != checker.history_rows_.size()) {
-          pending.row_score = checker.score_rows(pending.path, checker.history_rows_);
-          pending.history_version = checker.history_rows_.size();
-        }
     std::ranges::sort(frontier, state_less);
     auto state = std::move(frontier.front());
     frontier.erase(frontier.begin());
@@ -2110,10 +1825,6 @@ PreparedDSeparatingBasisSearch run_search_stage(
             diagnostics.witness->component, diagnostics.witness->sector,
             diagnostics.witness->mixed_degree),
         static_cast<unsigned>(state.path.size()));
-    if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory &&
-        std::ranges::find(checker.history_rows_, diagnostics.witness->target_row) ==
-            checker.history_rows_.end())
-      checker.history_rows_.push_back(diagnostics.witness->target_row);
     const auto pivot_started = std::chrono::steady_clock::now();
     auto proposals = checker.propose_pivots(state.selected, state.path, diagnostics,
                                             pool.integrals, pool.dot_counts);
@@ -2126,9 +1837,6 @@ PreparedDSeparatingBasisSearch run_search_stage(
       proposals.resize(options.swap_shortlist);
     report.swaps_shortlisted += proposals.size();
 
-    std::vector<std::size_t> parent_bad_rows;
-    if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory)
-      checker.score_rows(state.path, checker.history_rows_, &parent_bad_rows);
     std::vector<SearchState> proposed_states;
     for (const auto& proposal : proposals) {
       SearchState child = state;
@@ -2149,34 +1857,8 @@ PreparedDSeparatingBasisSearch run_search_stage(
                             .child_mixed_degree = proposal.child_mixed_degree,
                             .pivot_mixed_degree = proposal.pivot_mixed_degree,
                             .pivot_numerator_degree = proposal.pivot_numerator_degree});
-      if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory) {
-        std::vector<std::size_t> child_bad_rows;
-        child.row_score =
-            checker.score_rows(child.path, checker.history_rows_, &child_bad_rows);
-        const auto regressions = std::ranges::count_if(child_bad_rows, [&](auto row) {
-          return std::ranges::find(parent_bad_rows, row) == parent_bad_rows.end();
-        });
-        child.history_version = checker.history_rows_.size();
-        const std::array removed_row{find_row(
-            prepared_config.targets, pool.integrals[state.selected[proposal.slot]])};
-        const auto removed_score = checker.score_rows(child.path, removed_row);
-        if (options.experiment_trace)
-          options.experiment_trace(std::format(
-              "{{\"event\":\"row_score\",\"candidate\":{},\"slot\":{},\"history_rows\":"
-              "{},\"bad_rows\":{},\"maximum_degree\":{},\"total_degree\":{},\"removed_"
-              "master_bad_rows\":{},\"history_regressions\":{}}}",
-              proposal.candidate, proposal.slot, child.history_version,
-              child.row_score[0], child.row_score[1], child.row_score[2],
-              removed_score[0], regressions));
-        if (child.row_score[0] == std::numeric_limits<std::size_t>::max()) {
-          ++checker.pair_sampling_failures_;
-          continue;
-        }
-      }
       proposed_states.push_back(std::move(child));
     }
-    if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory)
-      std::stable_sort(proposed_states.begin(), proposed_states.end(), state_less);
     std::size_t accepted = 0;
     for (auto& child : proposed_states) {
       if (accepted == options.basis_beam_width) break;
@@ -2187,14 +1869,6 @@ PreparedDSeparatingBasisSearch run_search_stage(
       frontier.push_back(std::move(child));
       ++accepted;
     }
-    // Compare retained and newly proposed states against the same witness set
-    // before pruning, not only when the next state is popped.
-    if (options.strategy == DSeparatingSearchStrategy::MultiSlotHistory)
-      for (auto& pending : frontier)
-        if (pending.history_version != checker.history_rows_.size()) {
-          pending.row_score = checker.score_rows(pending.path, checker.history_rows_);
-          pending.history_version = checker.history_rows_.size();
-        }
     std::ranges::sort(frontier, state_less);
     if (frontier.size() > options.basis_beam_width) {
       report.beam_discarded += frontier.size() - options.basis_beam_width;
@@ -2211,8 +1885,7 @@ PreparedDSeparatingBasisSearch run_search_stage(
     report.status = DSeparatingBasisSearchStatus::Passed;
     report.message =
         "found the first strictly validated pole-guided D-separating basis";
-    if ((options.strategy == DSeparatingSearchStrategy::SequentialFactors ||
-         options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored))
+    if (options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored)
       report.message =
           "found a strictly validated basis by sequential factor elimination";
     progress.event("basis-found",
@@ -2236,8 +1909,8 @@ PreparedDSeparatingBasisSearch run_search_stage(
     }
     auto support = std::move(solution_diagnostics->nonzero_output_support);
     for (auto& position : support)
-      position = static_cast<std::uint32_t>(
-          (position / count) * count + slot_to_canonical[position % count]);
+      position = static_cast<std::uint32_t>((position / count) * count +
+                                            slot_to_canonical[position % count]);
     std::ranges::sort(support);
     finalize_statistics();
     return {.report = std::move(report),
@@ -2257,11 +1930,7 @@ PreparedDSeparatingBasisSearch run_search_stage(
     report.message =
         "pole-guided search exhausted the configured same-sector candidate pool";
   }
-  if (options.strategy == DSeparatingSearchStrategy::SingleFactorDiagnostic)
-    report.message = "independent specialized single-factor diagnostics completed; no "
-                     "strictly validated basis";
-  if ((options.strategy == DSeparatingSearchStrategy::SequentialFactors ||
-       options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored) &&
+  if (options.strategy == DSeparatingSearchStrategy::SequentialFactorsScored &&
       !budget_exhausted)
     report.message = "sequential factor chains ended without a strictly validated "
                      "basis; see per-chain status";
@@ -2288,26 +1957,40 @@ void add_search_work(DSeparatingBasisSearchReport& result,
   result.rank_deficient_rejects += previous.rank_deficient_rejects;
   result.moving_d_pole_rejects += previous.moving_d_pole_rejects;
   result.sampling_rejects += previous.sampling_rejects;
-  result.maximum_beam_depth = std::max(result.maximum_beam_depth, previous.maximum_beam_depth);
+  result.maximum_beam_depth =
+      std::max(result.maximum_beam_depth, previous.maximum_beam_depth);
   if (result.shortlisted_by_slot.size() < previous.shortlisted_by_slot.size())
     result.shortlisted_by_slot.resize(previous.shortlisted_by_slot.size());
   for (std::size_t i = 0; i < previous.shortlisted_by_slot.size(); ++i)
     result.shortlisted_by_slot[i] += previous.shortlisted_by_slot[i];
-  result.probe_statistics.logical_requests += previous.probe_statistics.logical_requests;
+  result.probe_statistics.logical_requests +=
+      previous.probe_statistics.logical_requests;
   result.probe_statistics.full_cache_hits += previous.probe_statistics.full_cache_hits;
-  result.probe_statistics.requested_target_rows += previous.probe_statistics.requested_target_rows;
-  result.probe_statistics.cached_target_rows += previous.probe_statistics.cached_target_rows;
-  result.probe_statistics.replayed_target_rows += previous.probe_statistics.replayed_target_rows;
-  result.probe_statistics.selected_replay_calls += previous.probe_statistics.selected_replay_calls;
-  result.probe_statistics.selected_compact_outputs += previous.probe_statistics.selected_compact_outputs;
-  result.probe_statistics.skipped_compact_outputs += previous.probe_statistics.skipped_compact_outputs;
-  result.probe_statistics.rational_interpolation_attempts += previous.probe_statistics.rational_interpolation_attempts;
-  result.probe_statistics.rational_interpolation_cache_hits += previous.probe_statistics.rational_interpolation_cache_hits;
-  result.probe_statistics.fixed_degree_attempts += previous.probe_statistics.fixed_degree_attempts;
+  result.probe_statistics.requested_target_rows +=
+      previous.probe_statistics.requested_target_rows;
+  result.probe_statistics.cached_target_rows +=
+      previous.probe_statistics.cached_target_rows;
+  result.probe_statistics.replayed_target_rows +=
+      previous.probe_statistics.replayed_target_rows;
+  result.probe_statistics.selected_replay_calls +=
+      previous.probe_statistics.selected_replay_calls;
+  result.probe_statistics.selected_compact_outputs +=
+      previous.probe_statistics.selected_compact_outputs;
+  result.probe_statistics.skipped_compact_outputs +=
+      previous.probe_statistics.skipped_compact_outputs;
+  result.probe_statistics.rational_interpolation_attempts +=
+      previous.probe_statistics.rational_interpolation_attempts;
+  result.probe_statistics.rational_interpolation_cache_hits +=
+      previous.probe_statistics.rational_interpolation_cache_hits;
+  result.probe_statistics.fixed_degree_attempts +=
+      previous.probe_statistics.fixed_degree_attempts;
   result.probe_statistics.thiele_attempts += previous.probe_statistics.thiele_attempts;
-  result.probe_statistics.exhaustive_fallbacks += previous.probe_statistics.exhaustive_fallbacks;
-  result.probe_statistics.completed_target_rows += previous.probe_statistics.completed_target_rows;
-  result.probe_statistics.avoided_basis_factorizations += previous.probe_statistics.avoided_basis_factorizations;
+  result.probe_statistics.exhaustive_fallbacks +=
+      previous.probe_statistics.exhaustive_fallbacks;
+  result.probe_statistics.completed_target_rows +=
+      previous.probe_statistics.completed_target_rows;
+  result.probe_statistics.avoided_basis_factorizations +=
+      previous.probe_statistics.avoided_basis_factorizations;
   result.timing.total_seconds += previous.timing.total_seconds;
   result.timing.native_prepare_seconds += previous.timing.native_prepare_seconds;
   result.timing.rank_filter_seconds += previous.timing.rank_filter_seconds;
@@ -2316,8 +1999,10 @@ void add_search_work(DSeparatingBasisSearchReport& result,
   result.timing.strict_validation_seconds += previous.timing.strict_validation_seconds;
   result.timing.probe_evaluation_seconds += previous.timing.probe_evaluation_seconds;
   result.timing.pointwise_rebase_seconds += previous.timing.pointwise_rebase_seconds;
-  result.timing.rational_interpolation_seconds += previous.timing.rational_interpolation_seconds;
-  result.timing.signature_comparison_seconds += previous.timing.signature_comparison_seconds;
+  result.timing.rational_interpolation_seconds +=
+      previous.timing.rational_interpolation_seconds;
+  result.timing.signature_comparison_seconds +=
+      previous.timing.signature_comparison_seconds;
   result.timing.rank_data_seconds += previous.timing.rank_data_seconds;
   result.timing.rank_coordinates_seconds += previous.timing.rank_coordinates_seconds;
   result.timing.rank_pivot_seconds += previous.timing.rank_pivot_seconds;
@@ -2332,6 +2017,14 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
     DSeparatingBasisProgressCallback progress_callback,
     ReductionOptions reduction_options)
 {
+  switch (options.strategy) {
+  case DSeparatingSearchStrategy::SingleSlot:
+  case DSeparatingSearchStrategy::SequentialFactorsScored:
+  case DSeparatingSearchStrategy::SingleSlotThenScored:
+    break;
+  default:
+    throw std::invalid_argument("unsupported D-separating search strategy");
+  }
   const auto search_started = std::chrono::steady_clock::now();
   if (options.initial_dimension_samples <= options.dimension_holdouts ||
       options.maximum_dimension_samples < options.initial_dimension_samples ||
@@ -2422,7 +2115,8 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
     validation_rows.push_back(find_row(prepared_config.targets, target));
   }
 
-  const bool staged = options.strategy == DSeparatingSearchStrategy::SingleSlotThenScored;
+  const bool staged =
+      options.strategy == DSeparatingSearchStrategy::SingleSlotThenScored;
   auto stage_options = options;
   if (staged) {
     stage_options.strategy = DSeparatingSearchStrategy::SingleSlot;
@@ -2434,8 +2128,10 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
     progress.set_basis_states(0);
     progress.set_swaps(0);
     progress.set_rejects(0, 0, 0);
-    progress.event("search-stage-start", std::format("strategy={} budget={}",
-        static_cast<unsigned>(settings.strategy), settings.maximum_basis_states));
+    progress.event("search-stage-start",
+                   std::format("strategy={} budget={}",
+                               static_cast<unsigned>(settings.strategy),
+                               settings.maximum_basis_states));
     auto result = run_search_stage(dataset, pool, initial_candidate_ids, candidate_rows,
                                    screening_rows, validation_rows, settings, progress);
     auto& report = result.report;
@@ -2454,11 +2150,15 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
                       .states_used = report.basis_states_tested,
                       .probe_statistics = report.probe_statistics,
                       .timing = report.timing});
-    progress.event("search-stage-end", std::format(
-        "strategy={} status={} states={} replay_calls={} cached_rows={} elapsed_ms={:.2f}",
-        static_cast<unsigned>(settings.strategy), static_cast<unsigned>(report.status),
-        report.basis_states_tested, report.probe_statistics.selected_replay_calls,
-        report.probe_statistics.cached_target_rows, report.timing.total_seconds * 1000));
+    progress.event("search-stage-end",
+                   std::format("strategy={} status={} states={} replay_calls={} "
+                               "cached_rows={} elapsed_ms={:.2f}",
+                               static_cast<unsigned>(settings.strategy),
+                               static_cast<unsigned>(report.status),
+                               report.basis_states_tested,
+                               report.probe_statistics.selected_replay_calls,
+                               report.probe_statistics.cached_target_rows,
+                               report.timing.total_seconds * 1000));
     return result;
   };
   auto result = run_stage(stage_options);
@@ -2467,7 +2167,8 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
        result.report.status == DSeparatingBasisSearchStatus::SearchBudgetExhausted)) {
     if (result.report.basis_states_tested < options.maximum_basis_states) {
       const auto reason = result.report.status == DSeparatingBasisSearchStatus::NotFound
-                              ? "simple_search_exhausted" : "simple_stage_budget";
+                              ? "simple_search_exhausted"
+                              : "simple_stage_budget";
       stages.back().reason = reason;
       progress.event("search-stage-fallback", reason);
       stage_options.strategy = DSeparatingSearchStrategy::SequentialFactorsScored;
@@ -2484,7 +2185,8 @@ PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
   result.report.stages = std::move(stages);
   result.report.timing.native_prepare_seconds = native_prepare_seconds;
   result.report.timing.total_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - search_started).count();
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - search_started)
+          .count();
   result.oracle = dataset.release_oracle();
   return result;
 }

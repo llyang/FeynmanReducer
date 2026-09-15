@@ -49,7 +49,6 @@ using reduction::detail::checked_add_i64;
 using reduction::detail::checked_mul_i64;
 using reduction::detail::IndexedColumns;
 using reduction::detail::IndexedTerm;
-using reduction::detail::reduction_polynomial_terms;
 
 using reduction::detail::projected_g_shift;
 using reduction::detail::ProjectedSeedGroup;
@@ -71,25 +70,12 @@ void BlackBoxFeynman::plan_kernel(
     const ReductionProgressCallback& progress,
     std::span<const std::uint32_t> relation_source_sectors)
 {
-  if (numerator_strategy == NumeratorReductionStrategy::Direct) {
-    plan_direct_numerator_kernel(coeffs, values, progress, relation_source_sectors);
-    return;
-  }
-  plan_kernel_impl(coeffs, values, progress, relation_source_sectors);
-}
-
-void BlackBoxFeynman::plan_kernel_impl(
-    const EvaluatedCoeffs<firefly::FFInt>& coeffs,
-    const std::vector<firefly::FFInt>& values,
-    const ReductionProgressCallback& progress,
-    std::span<const std::uint32_t> relation_source_sectors)
-{
   using T = firefly::FFInt;
   const TopLpTargetPlan* target_plan =
       top_lp_target_plan.columns.empty() ? nullptr : &top_lp_target_plan;
   KernelPlanner planner(cfg, target_plan);
   const auto variable_slots = std::span<const std::uint32_t>(cfg.propagator_slots);
-  const auto polynomial_terms = reduction_polynomial_terms(cfg);
+  const auto& polynomial_terms = cfg.polynomial_terms;
 
   auto check_basis_representatives = [&](std::span<const Integral> basis) {
     std::unordered_set<std::vector<int>, VectorHash> representatives;
@@ -600,7 +586,6 @@ void BlackBoxFeynman::plan_kernel_impl(
                            "relation_elimination_ms={:.2f}, "
                            "score_refresh_ms={:.2f}, "
                            "row_elimination_ms={:.2f}, "
-                           "back_substitution_ms={:.2f}, "
                            "support_selection_ms={:.2f}, compact_build_ms={:.2f}, "
                            "compact_elimination_ms={:.2f}",
                            milliseconds(domain_ready, candidate_ready),
@@ -611,7 +596,6 @@ void BlackBoxFeynman::plan_kernel_impl(
                            selection.timings.provisional_relation_elimination_ms,
                            selection.timings.provisional_score_refresh_ms,
                            selection.timings.provisional_row_elimination_ms,
-                           selection.timings.provisional_back_substitution_ms,
                            selection.timings.support_selection_ms,
                            selection.timings.compact_build_ms,
                            selection.timings.compact_elimination_ms),

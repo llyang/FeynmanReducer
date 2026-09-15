@@ -1,8 +1,8 @@
 #pragma once
 
 #include "DSeparatingSearchStrategy.hpp"
+#include "FactorSaturation.hpp"
 #include "NativeFixedBasisOracle.hpp"
-#include "SingleFactorExperiment.hpp"
 #include "core/Config.hpp"
 #include "reduction/ReductionProgress.hpp"
 
@@ -18,16 +18,8 @@
 
 namespace basis {
 
-struct SingleFactorTrialReport;
-
 struct DSeparatingBasisSearchOptions {
   DSeparatingSearchStrategy strategy = DSeparatingSearchStrategy::SingleSlotThenScored;
-  // Optional incremental experiment trace; never enabled by the production CLI.
-  std::function<void(std::string_view)> experiment_trace;
-  std::function<void(const SingleFactorTrialReport&)> factor_trial_completed;
-  std::function<void(std::uint64_t, std::size_t,
-                     const factor_experiment::SequenceRound&)>
-      sequence_round_completed;
   unsigned maximum_candidate_dots = 2;
   std::size_t screening_target_limit = 8;
   std::size_t maximum_basis_states = 100000;
@@ -45,12 +37,6 @@ struct DSeparatingBasisSearchOptions {
 };
 
 using DSeparatingBasisProgressCallback = std::function<void(std::string_view message)>;
-
-struct DDenominatorSignature {
-  FieldVector coefficients;
-
-  bool operator==(const DDenominatorSignature&) const = default;
-};
 
 // Re-expresses one coefficient row after replacing basis[slot] by an integral
 // whose coordinates in the old basis are pivot_coordinates.
@@ -131,19 +117,6 @@ struct DSeparatingBasisTiming {
   double rank_pivot_seconds = 0.0;
 };
 
-struct SingleFactorTrialReport {
-  std::uint64_t prime = 0;
-  std::size_t kinematic_point = 0;
-  FieldVector kinematics;
-  FieldVector factor;
-  factor_experiment::SaturationResult saturation;
-  std::string target_status = "not_checked";
-  std::string validation_status = "not_checked";
-  std::vector<std::size_t> target_poles;
-  std::vector<Integral> selected_basis;
-  std::vector<DSeparatingBasisSwap> swap_path;
-};
-
 struct DSeparatingSearchStageReport {
   DSeparatingSearchStrategy strategy = DSeparatingSearchStrategy::SingleSlot;
   DSeparatingBasisSearchStatus status = DSeparatingBasisSearchStatus::NotFound;
@@ -169,8 +142,7 @@ struct DSeparatingBasisSearchReport {
   std::size_t beam_discarded = 0;
   std::size_t seen_suppressed = 0;
   std::vector<std::size_t> shortlisted_by_slot;
-  std::vector<SingleFactorTrialReport> factor_trials;
-  std::vector<factor_experiment::SequenceResult> factor_sequences;
+  std::vector<factor_saturation::SequenceResult> factor_sequences;
   std::vector<std::uint64_t> sequence_primes;
   std::vector<std::size_t> sequence_anchors;
   std::vector<FieldVector> sequence_kinematics;

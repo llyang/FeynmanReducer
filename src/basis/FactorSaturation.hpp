@@ -4,9 +4,10 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 
-namespace basis::factor_experiment {
+namespace basis::factor_saturation {
 using RationalRow = std::vector<RationalFunction>;
 constexpr int infinite_valuation = std::numeric_limits<int>::max();
 RationalFunction normalize(const PrimeField&, RationalFunction);
@@ -69,16 +70,6 @@ struct SaturationResult {
 };
 using RowPrefetch = std::function<void(std::size_t, std::size_t)>;
 using RowProvider = std::function<std::optional<RationalRow>(std::size_t)>;
-using SlotChoice = std::function<std::size_t(std::size_t, std::span<const std::size_t>,
-                                             std::span<const Step>)>;
-// Exact algebra over the supplied F_p(d) model. Interpolated callers must not
-// upgrade a result into a certificate for unspecialized kinematics.
-SaturationResult
-saturate(const PrimeField&, const FieldVector& factor,
-         std::span<const std::size_t> initial, std::span<const std::uint32_t> sectors,
-         const RowProvider&, const SlotChoice&,
-         const std::function<void(const SaturationResult&)>& progress = {},
-         std::size_t maximum_steps = std::numeric_limits<std::size_t>::max());
 RationalRow apply_steps(const PrimeField&, RationalRow, std::span<const Step>,
                         const RowProvider&);
 
@@ -109,14 +100,15 @@ struct SequenceResult {
 using FactorFinder = std::function<FactorScan(std::span<const Step>)>;
 using SequenceValidator =
     std::function<std::string(std::span<const std::size_t>, std::span<const Step>)>;
+// Exact algebra over the supplied F_p(d) model; local regularity is not a
+// certificate for unspecialized kinematics. A nonempty PairScorer is required.
 // rows [0,sectors.size()) are candidates, remaining rows are original targets.
 // The provider always returns coordinates in the original basis; a committed
 // prefix is applied lazily. Local saturation never mutates committed coordinates.
-SequenceResult
-sequential(const PrimeField&, std::span<const std::size_t> initial,
-           std::span<const std::uint32_t> sectors, std::size_t target_count,
-           const RowProvider&, const FactorFinder&, const SlotChoice&,
-           const SequenceValidator&, std::size_t maximum_states,
-           const std::function<void(const SequenceRound&)>& progress = {},
-           const PairScorer& score_pairs = {}, const RowPrefetch& prefetch = {});
-} // namespace basis::factor_experiment
+SequenceResult sequential(const PrimeField&, std::span<const std::size_t> initial,
+                          std::span<const std::uint32_t> sectors,
+                          std::size_t target_count, const RowProvider&,
+                          const FactorFinder&, const SequenceValidator&,
+                          std::size_t maximum_states, const PairScorer& score_pairs,
+                          const RowPrefetch& prefetch = {});
+} // namespace basis::factor_saturation

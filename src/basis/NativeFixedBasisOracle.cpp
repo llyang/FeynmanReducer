@@ -1,6 +1,5 @@
 #include "NativeFixedBasisOracle.hpp"
 
-#include "LpNormalization.hpp"
 #include "core/ProbeValues.hpp"
 #include "reduction/BlackBoxFeynman.hpp"
 #include "reduction/ParameterEvaluation.hpp"
@@ -20,10 +19,8 @@ NativeFixedBasisOracle::take_recompact_source()
   return black_box_->take_recompact_source();
 }
 
-NativeFixedBasisOracle::NativeFixedBasisOracle(Config config,
-                                               bool compute_quotient_normalized)
-    : config_(std::move(config)),
-      compute_quotient_normalized_(compute_quotient_normalized)
+NativeFixedBasisOracle::NativeFixedBasisOracle(Config config)
+    : config_(std::move(config))
 {
   unit_rows_.resize(config_.targets.size());
   for (std::size_t target = 0; target < config_.targets.size(); ++target) {
@@ -51,8 +48,7 @@ std::size_t NativeFixedBasisOracle::total_output_count() const noexcept
 std::unique_ptr<NativeFixedBasisOracle> NativeFixedBasisOracle::prepare(
     Config config, std::vector<Integral> basis, ReductionProgressCallback progress,
     ReplayOrientationPreference replay_orientation,
-    std::span<const std::uint32_t> relation_source_sectors,
-    bool compute_quotient_normalized, ReductionOptions options)
+    std::span<const std::uint32_t> relation_source_sectors, ReductionOptions options)
 {
   if (basis.empty()) throw std::invalid_argument("fixed basis must not be empty");
   if (config.targets.empty())
@@ -79,15 +75,9 @@ std::unique_ptr<NativeFixedBasisOracle> NativeFixedBasisOracle::prepare(
   }
 
   config.basis = std::move(basis);
-  if (compute_quotient_normalized) {
-    for (const auto& target : config.targets)
-      (void)lp_normalization_data(config, target);
-    for (const auto& master : config.basis)
-      (void)lp_normalization_data(config, master);
-  }
 
   auto result = std::unique_ptr<NativeFixedBasisOracle>(
-      new NativeFixedBasisOracle(std::move(config), compute_quotient_normalized));
+      new NativeFixedBasisOracle(std::move(config)));
   options.replay_orientation = replay_orientation;
   result->black_box_ = BlackBoxFeynman::prepare(
       result->config_, relation_source_sectors, std::move(progress), options);
@@ -193,14 +183,6 @@ NativeFixedBasisOracle::evaluate_rows(const std::vector<firefly::FFInt>& values,
   return evaluate_complete_values(values, prepared_rows);
 }
 
-std::optional<NativeOracleEvaluation>
-NativeFixedBasisOracle::evaluate_rows(std::span<const firefly::FFInt> values,
-                                      const PreparedRows& prepared_rows)
-{
-  return evaluate_complete_values(
-      std::vector<firefly::FFInt>(values.begin(), values.end()), prepared_rows);
-}
-
 std::optional<NativeOracleEvaluation> NativeFixedBasisOracle::evaluate_complete_values(
     const std::vector<firefly::FFInt>& values, const PreparedRows& prepared_rows)
 {
@@ -221,7 +203,6 @@ std::optional<NativeOracleEvaluation> NativeFixedBasisOracle::evaluate_complete_
   if (compact.size() != prepared_rows.destinations.size())
     throw std::logic_error("native oracle selected output support mismatch");
 
-  const PrimeField field(*prime_);
   NativeOracleEvaluation result;
   result.conventional.assign(prepared_rows.target_rows.size(),
                              FieldVector(config_.basis.size(), 0));
@@ -230,25 +211,11 @@ std::optional<NativeOracleEvaluation> NativeFixedBasisOracle::evaluate_complete_
       result.conventional[target] = *unit_rows_[prepared_rows.target_rows[target]];
     }
   }
-  if (compute_quotient_normalized_) result.quotient_normalized = result.conventional;
   result.selected_reconstructed_outputs = prepared_rows.active_outputs.size();
   result.replay_performed = !prepared_rows.active_outputs.empty();
   for (std::size_t index = 0; index < compact.size(); ++index) {
     const auto [target, basis] = prepared_rows.destinations[index];
     result.conventional[target][basis] = compact[index].n;
-  }
-  if (compute_quotient_normalized_) {
-    const auto dimension = values[*config_.dimension_parameter_index].n;
-    for (std::size_t target = 0; target < prepared_rows.target_rows.size(); ++target) {
-      for (std::size_t basis = 0; basis < config_.basis.size(); ++basis) {
-        const auto value = result.conventional[target][basis];
-        result.quotient_normalized[target][basis] = field.multiply(
-            value,
-            lp_normalization_and_sign_ratio(
-                field, config_, config_.targets[prepared_rows.target_rows[target]],
-                config_.basis[basis], dimension));
-      }
-    }
   }
   return result;
 }

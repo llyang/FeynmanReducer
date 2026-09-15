@@ -3,13 +3,9 @@
 namespace basis {
 
 enum class DSeparatingSearchStrategy {
-  SingleSlot,
-  MultiSlot,
-  MultiSlotHistory,
-  SingleFactorDiagnostic,
-  SequentialFactors,
-  SequentialFactorsScored,
-  SingleSlotThenScored
+  SingleSlot = 0,
+  SequentialFactorsScored = 5,
+  SingleSlotThenScored = 6
 };
 
 } // namespace basis

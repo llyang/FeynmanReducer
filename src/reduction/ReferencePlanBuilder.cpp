@@ -15,8 +15,7 @@ void BlackBoxFeynman::build_reference_evaluation_plan(
     const reduction::detail::KernelPublicationInput& input)
 {
   using reduction::detail::checked_add_i64;
-  const auto polynomial_terms =
-      reduction::detail::reduction_polynomial_terms(cfg, numerator_strategy);
+  const auto& polynomial_terms = cfg.polynomial_terms;
   const std::size_t num_params = reduction::detail::coefficient_parameter_count(cfg);
   const auto& indexed_basis_cols = input.basis_columns;
   const auto& indexed_target_cols = input.target_columns;

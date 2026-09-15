@@ -1,4 +1,6 @@
 #include "reduction/FeynmanReducer.hpp"
+#include "reduction/detail/PreparedReconstruction.hpp"
+#include "reduction/detail/ReductionStage.hpp"
 
 #include "basis/DSeparatingReduction.hpp"
 #include "masters/detail/GlobalBasisSelector.hpp"
@@ -17,45 +19,14 @@
 
 #include <algorithm>
 #include <format>
-#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace {
 
-template <typename Function>
-std::invoke_result_t<Function>
-run_reduction_stage(const ReductionProgressCallback& progress, std::string label,
-                    Function&& function)
-{
-  if (progress) progress(label, ReductionProgressEvent::started);
-  try {
-    if constexpr (std::is_void_v<std::invoke_result_t<Function>>) {
-      std::invoke(std::forward<Function>(function));
-      if (progress) progress(label, ReductionProgressEvent::completed);
-    } else {
-      std::invoke_result_t<Function> result =
-          std::invoke(std::forward<Function>(function));
-      if (progress) progress(label, ReductionProgressEvent::completed);
-      return result;
-    }
-  } catch (...) {
-    if (progress) {
-      try {
-        progress(label, ReductionProgressEvent::failed);
-      } catch (...) {
-      }
-    }
-    throw;
-  }
-}
-
-} // namespace
-
-namespace {
+using reduction::detail::run_reduction_stage;
 
 template <typename BlackBox>
 ReductionResult reconstruct_prepared(Config& config,
@@ -270,8 +241,7 @@ ReductionResult perform_reduction_impl(Config& config,
   if (config.basis_selection == BasisSelectionPolicy::DSeparating) {
     if (options.d_separating_kernel == DSeparatingKernelStrategy::Auto) {
       options.d_separating_kernel =
-          options.numerator_strategy == NumeratorReductionStrategy::Projected &&
-                  options.d_separating_shared == DSeparatingSharedOptimization::None
+          options.d_separating_shared == DSeparatingSharedOptimization::None
               ? DSeparatingKernelStrategy::ReuseProvisionalReselectFinalBasis
               : DSeparatingKernelStrategy::SharedOracle;
     }
@@ -294,50 +264,40 @@ ReductionResult perform_reduction_impl(Config& config,
           return basis::DSeparatingReduction::prepare(
               config, config.basis, relation_source_sectors, progress, options);
         });
+    std::unique_ptr<BlackBoxFeynman> final_kernel;
     if (uses_recompact_source(options.d_separating_kernel)) {
       auto source = black_box->take_recompact_source();
       black_box.reset();
-      auto final_kernel = run_reduction_stage(
+      final_kernel = run_reduction_stage(
           progress, "Recompact final D-separating reduction kernel", [&] {
             return BlackBoxFeynman::prepare_from_source(config, std::move(source),
                                                         progress, options);
           });
-      if (options.d_separating_rebuild_replay != DSeparatingRebuildReplay::Exact) {
-        const bool enabled =
-            final_kernel->configure_rebuild_replay(options.d_separating_rebuild_replay);
-        if (progress)
-          progress(enabled
-                       ? (options.d_separating_rebuild_replay ==
-                                  DSeparatingRebuildReplay::TargetRowsCached
-                              ? "Final replay: target-row reuse with cache enabled"
-                              : "Final replay: target-row reuse enabled")
-                       : "Final replay: target-row reuse skipped (master orientation)",
-                   ReductionProgressEvent::info);
-      }
-      return reconstruct_prepared(config, std::move(final_kernel), std::move(progress));
-    }
-    if (options.d_separating_kernel == DSeparatingKernelStrategy::RebuildFinalBasis) {
+    } else if (options.d_separating_kernel ==
+               DSeparatingKernelStrategy::RebuildFinalBasis) {
       black_box.reset();
-      auto final_kernel = run_reduction_stage(
+      final_kernel = run_reduction_stage(
           progress, "Prepare final D-separating reduction kernel", [&] {
             return BlackBoxFeynman::prepare(config, relation_source_sectors, progress,
                                             options);
           });
-      if (options.d_separating_rebuild_replay != DSeparatingRebuildReplay::Exact) {
-        const bool enabled =
-            final_kernel->configure_rebuild_replay(options.d_separating_rebuild_replay);
-        if (progress)
-          progress(enabled
-                       ? (options.d_separating_rebuild_replay ==
-                                  DSeparatingRebuildReplay::TargetRowsCached
-                              ? "Final replay: target-row reuse with cache enabled"
-                              : "Final replay: target-row reuse enabled")
-                       : "Final replay: target-row reuse skipped (master orientation)",
-                   ReductionProgressEvent::info);
-      }
-      return reconstruct_prepared(config, std::move(final_kernel), std::move(progress));
+    } else {
+      return reconstruct_prepared(config, std::move(black_box), std::move(progress));
     }
-    return reconstruct_prepared(config, std::move(black_box), std::move(progress));
+    if (options.d_separating_replay != TargetReplayPolicy::Exact) {
+      const bool enabled =
+          final_kernel->configure_target_replay(options.d_separating_replay);
+      if (progress)
+        progress(
+            enabled
+                ? (options.d_separating_replay == TargetReplayPolicy::TargetRowsCached
+                       ? "Final replay: target-row reuse with cache enabled"
+                       : "Final replay: target-row reuse enabled")
+                : "Final replay: target-row reuse skipped (master orientation)",
+            ReductionProgressEvent::info);
+    }
+    return reduction::detail::reconstruct_prepared_kernel(
+        config, std::move(final_kernel), std::move(progress));
   }
 
   options.d_separating_kernel = DSeparatingKernelStrategy::SharedOracle;
@@ -346,8 +306,8 @@ ReductionResult perform_reduction_impl(Config& config,
                ? BlackBoxFeynman::prepare(config, progress, options)
                : BlackBoxFeynman::prepare(config, *candidates, progress, options);
   });
-  if (options.default_replay != DSeparatingRebuildReplay::Exact) {
-    const bool enabled = black_box->configure_rebuild_replay(options.default_replay);
+  if (options.default_replay != TargetReplayPolicy::Exact) {
+    const bool enabled = black_box->configure_target_replay(options.default_replay);
     if (progress)
       progress(enabled
                    ? "Default replay: target-row reuse enabled"
@@ -365,7 +325,8 @@ ReductionResult perform_reduction_impl(Config& config,
                ReductionProgressEvent::info);
     }
   }
-  return reconstruct_prepared(config, std::move(black_box), std::move(progress));
+  return reduction::detail::reconstruct_prepared_kernel(config, std::move(black_box),
+                                                        std::move(progress));
 }
 
 } // namespace
@@ -392,15 +353,10 @@ ReductionResult perform_reduction(Config config, masters::MasterCandidateSet can
   return perform_reduction_impl(config, &candidates, std::move(progress), options);
 }
 
-ReductionResult reduction::research::reconstruct_fixed_basis(
-    Config config, std::span<const std::uint32_t> relation_source_sectors,
-    ReductionProgressCallback progress, ReductionOptions options)
+ReductionResult
+reduction::detail::reconstruct_prepared_kernel(Config& config,
+                                               std::unique_ptr<BlackBoxFeynman> kernel,
+                                               ReductionProgressCallback progress)
 {
-  if (config.basis.empty()) throw std::invalid_argument("fixed basis must not be empty");
-  options.d_separating_kernel = DSeparatingKernelStrategy::SharedOracle;
-  auto kernel = run_reduction_stage(progress, "Prepare fixed-basis experimental kernel", [&] {
-    return BlackBoxFeynman::prepare(config, relation_source_sectors, progress, options);
-  });
-  (void)kernel->configure_rebuild_replay(DSeparatingRebuildReplay::TargetRowsCached);
   return reconstruct_prepared(config, std::move(kernel), std::move(progress));
 }

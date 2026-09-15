@@ -1,4 +1,4 @@
-#include "SingleFactorExperiment.hpp"
+#include "FactorSaturation.hpp"
 #include <algorithm>
 #include <chrono>
 #include <flint/nmod_poly.h>
@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <tuple>
 
-namespace basis::factor_experiment {
+namespace basis::factor_saturation {
 namespace {
 struct Poly {
   nmod_poly_t p;
@@ -163,100 +163,13 @@ RationalRow apply_steps(const PrimeField& f, RationalRow row,
   }
   return row;
 }
-SaturationResult saturate(const PrimeField& f, const FieldVector& h,
-                          std::span<const std::size_t> initial,
-                          std::span<const std::uint32_t> sectors,
-                          const RowProvider& provider, const SlotChoice& choose,
-                          const std::function<void(const SaturationResult&)>& progress,
-                          std::size_t maximum_steps)
-{
-  SaturationResult result;
-  result.selected.assign(initial.begin(), initial.end());
-  if (initial.empty() || initial.size() > sectors.size())
-    throw std::invalid_argument("invalid initial basis");
-  std::vector<std::optional<RationalRow>> rows(sectors.size());
-  std::vector<RationalRow> pivots;
-  const auto load = [&](std::size_t c) {
-    if (rows[c]) return true;
-    auto row = provider(c);
-    if (!row) return false;
-    if (row->size() != initial.size())
-      throw std::invalid_argument("rational candidate shape mismatch");
-    for (std::size_t k = 0; k < pivots.size(); ++k)
-      *row = rebase(f, *row, pivots[k], result.steps[k].slot);
-    rows[c] = std::move(row);
-    ++result.covered;
-    if (regular(f, *rows[c], h)) ++result.regular;
-    return true;
-  };
-  for (auto c : initial)
-    if (!load(c)) return result;
-  for (;;) {
-    bool changed = false;
-    result.blocked.clear();
-    for (std::size_t c = 0; c < sectors.size(); ++c) {
-      if (!load(c)) return result;
-      if (regular(f, *rows[c], h)) continue;
-      std::vector<int> vs;
-      for (const auto& x : *rows[c])
-        vs.push_back(valuation(f, x, h));
-      const auto minimum = *std::ranges::min_element(vs);
-      std::vector<std::size_t> all, allowed;
-      for (std::size_t j = 0; j < vs.size(); ++j)
-        if (vs[j] == minimum) {
-          all.push_back(j);
-          if (sectors[c] == sectors[result.selected[j]]) allowed.push_back(j);
-        }
-      if (allowed.empty()) {
-        result.blocked.push_back({c, minimum, std::move(all)});
-        continue;
-      }
-      const auto j = choose(c, allowed, result.steps);
-      if (std::ranges::find(allowed, j) == allowed.end())
-        throw std::logic_error("invalid monotone pivot choice");
-      if (result.steps.size() == maximum_steps) {
-        result.status = "budget_exhausted";
-        return result;
-      }
-      const auto pivot = *rows[c];
-      const auto before = result.regular;
-      result.regular = 0;
-      for (auto& row : rows)
-        if (row) {
-          const bool was_regular = regular(f, *row, h);
-          *row = rebase(f, *row, pivot, j);
-          const bool now_regular = regular(f, *row, h);
-          if (was_regular && !now_regular)
-            throw std::logic_error("single-factor monotonicity violated");
-          result.regular += now_regular;
-        }
-      if (result.regular <= before)
-        throw std::logic_error("single-factor step made no progress");
-      result.selected[j] = c;
-      result.steps.push_back({c, j, minimum, result.regular});
-      pivots.push_back(pivot);
-      if (result.steps.size() > sectors.size() - initial.size())
-        throw std::logic_error("single-factor step bound exceeded");
-      if (progress) progress(result);
-      changed = true;
-      break;
-    }
-    if (changed) continue;
-    result.status =
-        result.blocked.empty() ? "candidate_pool_regular" : "eligibility_blocked";
-    return result;
-  }
-}
-
 namespace {
-SaturationResult
-saturate_ranked(const PrimeField& f, const FieldVector& h,
-                std::span<const std::size_t> initial,
-                std::span<const std::uint32_t> sectors, std::size_t target_count,
-                const RowProvider& provider, std::span<const FactorObservation> known,
-                const std::set<std::vector<std::size_t>>& committed_seen,
-                const PairScorer& score, std::size_t maximum_steps,
-                const RowPrefetch& prefetch)
+SaturationResult saturate_ranked(
+    const PrimeField& f, const FieldVector& h, std::span<const std::size_t> initial,
+    std::span<const std::uint32_t> sectors, std::size_t target_count,
+    const RowProvider& provider, std::span<const FactorObservation> known,
+    const std::set<std::vector<std::size_t>>& committed_seen, const PairScorer& score,
+    std::size_t maximum_steps, const RowPrefetch& prefetch)
 {
   using Clock = std::chrono::steady_clock;
   const auto elapsed = [](auto start) {
@@ -273,7 +186,7 @@ saturate_ranked(const PrimeField& f, const FieldVector& h,
   std::vector<RationalRow> rows;
   for (std::size_t c = 0; c < sectors.size() + target_count; ++c) {
     if (prefetch && c % 32 == 0)
-      prefetch(c, std::min<std::size_t>(32, sectors.size()+target_count-c));
+      prefetch(c, std::min<std::size_t>(32, sectors.size() + target_count - c));
     auto row = provider(c);
     if (!row) return result;
     if (row->size() != initial.size())
@@ -407,11 +320,12 @@ saturate_ranked(const PrimeField& f, const FieldVector& h,
 SequenceResult sequential(const PrimeField& field, std::span<const std::size_t> initial,
                           std::span<const std::uint32_t> sectors,
                           std::size_t target_count, const RowProvider& original,
-                          const FactorFinder& find, const SlotChoice& choose,
-                          const SequenceValidator& validate, std::size_t maximum_states,
-                          const std::function<void(const SequenceRound&)>& progress,
-                          const PairScorer& score_pairs, const RowPrefetch& prefetch)
+                          const FactorFinder& find, const SequenceValidator& validate,
+                          std::size_t maximum_states, const PairScorer& score_pairs,
+                          const RowPrefetch& prefetch)
 {
+  if (!score_pairs)
+    throw std::invalid_argument("factor saturation requires a pair scorer");
   struct CachedRow {
     std::optional<RationalRow> row;
     std::size_t version = 0;
@@ -441,7 +355,6 @@ SequenceResult sequential(const PrimeField& field, std::span<const std::size_t> 
   std::vector<FactorObservation> observations;
   const auto publish = [&](SequenceRound round) {
     round.cumulative_steps = result.steps;
-    if (progress) progress(round);
     result.rounds.push_back(std::move(round));
   };
   for (;;) {
@@ -472,29 +385,15 @@ SequenceResult sequential(const PrimeField& field, std::span<const std::size_t> 
         result.status = "budget_exhausted";
         return result;
       }
-      // SlotChoice receives the entire physical prefix, not a local trial path.
-      const SlotChoice full_choice = [&](std::size_t candidate,
-                                         std::span<const std::size_t> slots,
-                                         std::span<const Step> suffix) {
+      const PairScorer full_score = [&](std::span<const PivotPair> pairs,
+                                        std::span<const Step> suffix) {
         auto path = result.steps;
         path.insert(path.end(), suffix.begin(), suffix.end());
-        return choose(candidate, slots, path);
+        return score_pairs(pairs, path);
       };
-      if (score_pairs) {
-        const PairScorer full_score = [&](std::span<const PivotPair> pairs,
-                                          std::span<const Step> suffix) {
-          auto path = result.steps;
-          path.insert(path.end(), suffix.begin(), suffix.end());
-          return score_pairs(pairs, path);
-        };
-        round.saturation = saturate_ranked(
-            field, h, result.selected, sectors, target_count, current, observations,
-            seen, full_score, maximum_states - result.states_used, prefetch);
-      } else {
-        round.saturation =
-            saturate(field, h, result.selected, sectors, current, full_choice, {},
-                     maximum_states - result.states_used);
-      }
+      round.saturation = saturate_ranked(
+          field, h, result.selected, sectors, target_count, current, observations, seen,
+          full_score, maximum_states - result.states_used, prefetch);
       result.states_used += round.saturation.steps.size();
       round.status = round.saturation.status;
       if (round.status == "budget_exhausted") {
@@ -549,7 +448,7 @@ SequenceResult sequential(const PrimeField& field, std::span<const std::size_t> 
                           round.saturation.steps.end());
       pivots.insert(pivots.end(), std::make_move_iterator(suffix_pivots.begin()),
                     std::make_move_iterator(suffix_pivots.end()));
-      if (score_pairs) {
+      {
         auto intermediate = result.selected;
         for (std::size_t i = 0; i + 1 < round.saturation.steps.size(); ++i) {
           const auto& step = round.saturation.steps[i];
@@ -602,4 +501,4 @@ SequenceResult sequential(const PrimeField& field, std::span<const std::size_t> 
   }
 }
 
-} // namespace basis::factor_experiment
+} // namespace basis::factor_saturation

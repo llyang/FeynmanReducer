@@ -36,7 +36,6 @@ struct KernelPublicationInput;
 struct ReductionKernelStatistics {
   std::string compact_policy = "sector-markowitz";
   std::string_view block_layout = "seed-sector-scc";
-  std::string_view numerator_strategy = "projected";
   std::size_t lp_variable_count = 0;
 
   std::size_t maximum_g_shift = 0;
@@ -45,10 +44,6 @@ struct ReductionKernelStatistics {
   std::size_t top_lp_replay_expressions = 0;
   std::size_t top_lp_replay_product_nodes = 0;
   std::size_t top_lp_replay_polynomial_factors = 0;
-  std::size_t jet_state_count = 0;
-  std::size_t jet_row_count = 0;
-  std::size_t jet_relation_count = 0;
-  std::size_t jet_group_count = 0;
   std::size_t g_layer_activation_rounds = 0;
   std::size_t g_layer_activated_groups = 0;
   std::size_t g_layer_activated_points = 0;
@@ -120,7 +115,6 @@ struct ReductionKernelStatistics {
   double replay_finalize_seconds = 0.0;
   double replay_validation_seconds = 0.0;
   double provisional_relation_elimination_seconds = 0.0;
-  double provisional_back_substitution_seconds = 0.0;
   double provisional_score_refresh_seconds = 0.0;
   double provisional_row_elimination_seconds = 0.0;
   std::size_t compiled_groups = 0;
@@ -387,13 +381,9 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   size_t rhs_workspace_size = 0;
   size_t target_rhs_workspace_size = 0;
   ReductionKernelStatistics kernel_statistics_;
-  NumeratorReductionStrategy numerator_strategy = NumeratorReductionStrategy::Projected;
   ReplayOrientationPreference replay_orientation_preference =
       ReplayOrientationPreference::Auto;
   AnsatzDotOrdering ansatz_dot_ordering = AnsatzDotOrdering::Auto;
-  unsigned direct_pinched_dot_halo = 1;
-  DirectGroupOrdering direct_group_ordering = DirectGroupOrdering::Auto;
-  DirectRankOrdering direct_rank_ordering = DirectRankOrdering::LowFirst;
   bool check_master_independence = false;
   TopLpTargetPlan top_lp_target_plan;
 
@@ -478,7 +468,7 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
     std::size_t matrix_workspace_size = 0;
     std::size_t rhs_workspace_size = 0;
   };
-  DSeparatingRebuildReplay rebuild_replay_policy = DSeparatingRebuildReplay::Exact;
+  TargetReplayPolicy target_replay_policy = TargetReplayPolicy::Exact;
   MasterReplayGrouping master_replay_grouping = MasterReplayGrouping::Exact;
   [[nodiscard]] std::vector<firefly::FFInt>
   eval_grouped_outputs(const std::vector<firefly::FFInt>& values,
@@ -581,21 +571,12 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
 
   /// 探测能解出所有目标积分的拟设边界，并生成压缩方阵的骨架结构
   ///
-  /// Projected 和 direct 都从各自的初始 domain 开始，按 residual group 执行局部
+  /// Projected 从初始 domain 开始，按 residual group 执行局部
   /// expansion。无法闭合时抛出结构性错误；成功后录制消元 Tape。
   void plan_kernel(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
                    const std::vector<firefly::FFInt>& values,
                    const ReductionProgressCallback& progress,
                    std::span<const std::uint32_t> relation_source_sectors);
-  void plan_kernel_impl(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
-                        const std::vector<firefly::FFInt>& values,
-                        const ReductionProgressCallback& progress,
-                        std::span<const std::uint32_t> relation_source_sectors);
-  void
-  plan_direct_numerator_kernel(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
-                               const std::vector<firefly::FFInt>& values,
-                               const ReductionProgressCallback& progress,
-                               std::span<const std::uint32_t> relation_source_sectors);
   void publish_kernel_plan(reduction::detail::KernelPublicationInput&& input,
                            const EvaluatedCoeffs<firefly::FFInt>& coeffs,
                            const std::vector<firefly::FFInt>& values);
@@ -665,7 +646,7 @@ public:
   prepare_from_source(Config&&, std::unique_ptr<reduction::detail::RecompactSource>,
                       ReductionProgressCallback = {}, ReductionOptions = {}) = delete;
   // Quiescent preparation only. Original flat output positions remain stable.
-  // Master orientation is intentionally unchanged by this experimental operation.
+  // Master orientation is unchanged by this operation.
   bool retain_outputs(std::span<const std::uint32_t> active_outputs,
                       ReductionProgressCallback progress = {});
   // These low-level entry points deliberately borrow config to avoid copying
@@ -707,9 +688,9 @@ public:
     return cfg.targets.size() * cfg.basis.size();
   }
 
-  // Internal experiment: call only on a quiescent, prepared final kernel.
+  // Configure target replay only on a quiescent, prepared kernel.
   // Returns false for master replay, whose selection policy remains unchanged.
-  bool configure_rebuild_replay(DSeparatingRebuildReplay policy);
+  bool configure_target_replay(TargetReplayPolicy policy);
 
   // Prepared, quiescent master kernel only; false leaves target policy unchanged.
   bool configure_master_replay(MasterReplayGrouping policy);
