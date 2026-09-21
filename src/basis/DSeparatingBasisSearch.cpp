@@ -1821,7 +1821,7 @@ run_search_stage(NativeBasisProbeDataset& dataset, const BasisIntegralPool& pool
             "target={} component={} sector={} mixed_degree={}",
             format_mathematica_integral(
                 prepared_config.integral_header,
-                prepared_config.targets[diagnostics.witness->target_row].indices),
+                prepared_config.targets[diagnostics.witness->target_row]),
             diagnostics.witness->component, diagnostics.witness->sector,
             diagnostics.witness->mixed_degree),
         static_cast<unsigned>(state.path.size()));

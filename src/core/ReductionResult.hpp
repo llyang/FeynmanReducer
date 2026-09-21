@@ -20,9 +20,12 @@ struct ReductionResult {
   std::vector<std::string> parameters;
   std::map<std::string, ExactRationalConstant> numerics;
   std::vector<Integral> basis;
+  // Source targets retained for compatibility and diagnostics. Coefficients
+  // are indexed by outputs, not by this vector, when combinations are used.
   std::vector<Integral> targets;
+  std::vector<ReductionOutput> outputs;
   std::shared_ptr<const FlintRationalContext> context;
-  // target-major, then basis-major.
+  // output-major, then basis-major.
   std::vector<FactorizedRational> coefficients;
   DSeparationReport d_separation;
 };

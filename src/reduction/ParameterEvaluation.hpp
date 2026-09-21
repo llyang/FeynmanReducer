@@ -7,6 +7,7 @@
 
 #include <gmpxx.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -52,6 +53,22 @@ rational_is_usable_at_prime(const ExactRationalConstant& value, std::uint64_t pr
 {
   return !config.dimension_value.has_value() ||
          rational_is_usable_at_prime(*config.dimension_value, prime);
+}
+
+[[nodiscard]] inline bool configuration_is_usable_at_prime(const Config& config,
+                                                           std::uint64_t prime)
+{
+  if (!configuration_is_usable_at_prime(static_cast<const TopologyConfig&>(config),
+                                        prime)) {
+    return false;
+  }
+  const bool needs_inverse_lp_scale =
+      std::ranges::any_of(config.targets, [](const Integral& target) {
+        return target.dimension_shift < 0;
+      });
+  if (!needs_inverse_lp_scale) return true;
+  const mpz_class numerator(config.lp_polynomial_scale.numerator);
+  return mpz_divisible_ui_p(numerator.get_mpz_t(), prime) == 0;
 }
 
 [[nodiscard]] inline std::vector<std::uint64_t>

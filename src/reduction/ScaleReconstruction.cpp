@@ -96,19 +96,28 @@ FactorizedRational restore_reconstruction_scale(
     const std::shared_ptr<const FlintRationalContext>& full_context, std::size_t scale,
     const Integral& target, const Integral& master)
 {
+  std::int64_t offset = 0;
+  for (const int index : target.indices)
+    offset = checked_sum(offset, -static_cast<std::int64_t>(index));
+  return restore_reconstruction_scale(reduced, full_context, scale, offset, master);
+}
+
+FactorizedRational restore_reconstruction_scale(
+    const FactorizedRational& reduced,
+    const std::shared_ptr<const FlintRationalContext>& full_context, std::size_t scale,
+    std::int64_t output_scale_offset, const Integral& master)
+{
   auto names = full_context->variable_names();
   if (scale >= names.size() || names[scale] == "d")
     throw std::logic_error("invalid scale restoration variable");
   names.erase(names.begin() + static_cast<std::ptrdiff_t>(scale));
-  if (names != reduced.context()->variable_names() ||
-      target.indices.size() != master.indices.size())
+  if (names != reduced.context()->variable_names())
     throw std::logic_error("factorized scale restoration mapping mismatch");
   if (reduced.is_zero()) return FactorizedRational(full_context);
   factorized_detail::Builder result(full_context);
-  std::int64_t power = 0;
-  for (std::size_t i = 0; i < target.indices.size(); ++i)
-    power = checked_sum(power, static_cast<std::int64_t>(master.indices[i]) -
-                                   target.indices[i]);
+  std::int64_t power = output_scale_offset;
+  for (const int index : master.indices)
+    power = checked_sum(power, static_cast<std::int64_t>(index));
   const auto lift = [&](const FlintRational& polynomial) {
     const auto maximum =
         max_degree(fmpz_mpoly_q_numref(polynomial.raw()), *reduced.context());

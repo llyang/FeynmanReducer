@@ -6,6 +6,19 @@
 #include <stdexcept>
 
 namespace reduction::detail {
+namespace {
+std::string output_name(const ReductionResult& result, std::size_t output)
+{
+  if (result.outputs.empty())
+    return format_mathematica_integral(result.integral_header,
+                                       result.targets.at(output));
+  const auto& descriptor = result.outputs.at(output);
+  return descriptor.named
+             ? descriptor.name
+             : format_mathematica_integral(result.integral_header, descriptor.integral);
+}
+} // namespace
+
 void check_d_separation(ReductionResult& result, BasisSelectionPolicy policy,
                         const ReductionProgressCallback& progress)
 {
@@ -17,7 +30,9 @@ void check_d_separation(ReductionResult& result, BasisSelectionPolicy policy,
                ReductionProgressEvent::info);
     return;
   }
-  if (result.coefficients.size() != result.targets.size() * result.basis.size())
+  const std::size_t output_count =
+      result.outputs.empty() ? result.targets.size() : result.outputs.size();
+  if (result.coefficients.size() != output_count * result.basis.size())
     throw std::logic_error("D-separation result shape mismatch");
   for (std::size_t i = 0; i < result.coefficients.size(); ++i) {
     const auto factor = result.coefficients[i].mixed_denominator_factor();
@@ -26,8 +41,7 @@ void check_d_separation(ReductionResult& result, BasisSelectionPolicy policy,
     if (result.d_separation.witness.empty())
       result.d_separation.witness = std::format(
           "target={}, master={}, mixed factor=({})",
-          format_mathematica_integral(result.integral_header,
-                                      result.targets[i / result.basis.size()].indices),
+          output_name(result, i / result.basis.size()),
           format_mathematica_integral(result.integral_header,
                                       result.basis[i % result.basis.size()].indices),
           result.coefficients[i].factors().at(*factor).polynomial.to_string());

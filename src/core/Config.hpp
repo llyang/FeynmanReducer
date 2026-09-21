@@ -17,8 +17,41 @@ struct PolynomialTerm {
 
 struct Integral {
   std::vector<int> indices;
+  // Additive shift of the spacetime dimension: this integral lives in d + k.
+  // The public input requires k to be even. Master integrals always use k = 0.
+  int dimension_shift = 0;
 
   bool operator==(const Integral&) const = default;
+};
+
+// User-visible left-hand side of a reduction rule. Integral outputs preserve
+// the historical F[...] form; named outputs are validated Mathematica
+// expressions such as amp or amp[1,-2].
+struct ReductionOutput {
+  bool named = false;
+  Integral integral;
+  std::string name;
+  // Under a common rescaling of all kinematic invariants, a coefficient of
+  // this output in front of master b scales as scale_offset + sum(b).
+  std::int64_t scale_offset = 0;
+
+  bool operator==(const ReductionOutput&) const = default;
+};
+
+struct ReductionRequestTerm {
+  // Index into Config::targets.
+  std::uint32_t target = 0;
+  // Canonical FLINT rational-function text in Config::parameters order.
+  std::string coefficient = "1";
+
+  bool operator==(const ReductionRequestTerm&) const = default;
+};
+
+struct ReductionRequest {
+  ReductionOutput output;
+  std::vector<ReductionRequestTerm> terms;
+
+  bool operator==(const ReductionRequest&) const = default;
 };
 
 struct ExactRationalConstant {
@@ -89,6 +122,10 @@ struct TopologyConfig {
   std::optional<std::uint32_t> dimension_parameter_index;
   std::optional<ExactRationalConstant> dimension_value;
   std::map<std::string, ExactRationalConstant> numerics;
+  // The compiled integer LP polynomial is lp_polynomial_scale times the exact
+  // polynomial constructed from the propagators. Same-dimension reductions
+  // cancel this factor; dimension-shifted targets do not.
+  ExactRationalConstant lp_polynomial_scale{"1", "1"};
   std::vector<PolynomialTerm> polynomial_terms;
   std::optional<SymmetryAnalysis> symmetry;
   // Compiled from every propagator/ISP expression. It is consumed by the
@@ -108,7 +145,11 @@ struct MasterFinderConfig : TopologyConfig {
 
 struct Config : MasterFinderConfig {
   std::vector<Integral> basis;
+  // Unique physical integrals used as kernel right-hand sides.
   std::vector<Integral> targets;
+  // Empty means the legacy one-output-per-target interface. It is populated
+  // when targets_file contains named combinations or multiple input files.
+  std::vector<ReductionRequest> reduction_requests;
   BasisSelectionPolicy basis_selection = BasisSelectionPolicy::Default;
   bool check_master_independence = false;
   bool factor_scan = false;

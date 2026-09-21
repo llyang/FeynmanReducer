@@ -79,6 +79,11 @@ FactorizedRational restore_reconstruction_scale(
     const std::shared_ptr<const FlintRationalContext>& full_context, std::size_t scale,
     const Integral& target, const Integral& master);
 
+FactorizedRational restore_reconstruction_scale(
+    const FactorizedRational& reduced,
+    const std::shared_ptr<const FlintRationalContext>& full_context, std::size_t scale,
+    std::int64_t output_scale_offset, const Integral& master);
+
 void validate_restored_scale(const Config& config, const ReductionResult& result,
                              std::span<const std::uint32_t> outputs,
                              const std::function<void()>& prime_changed,

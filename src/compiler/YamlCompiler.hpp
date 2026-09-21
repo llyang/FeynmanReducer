@@ -21,3 +21,12 @@ compile_yaml_master_finder_config(const std::filesystem::path& filepath);
 
 [[nodiscard]] std::map<std::string, ExactRationalConstant>
 compile_yaml_numerics(const std::filesystem::path& filepath);
+
+// Lightweight query used by reduction_validate, which intentionally does not
+// compile a topology or support named-combination reference synthesis.
+[[nodiscard]] bool yaml_uses_combination_targets(const std::filesystem::path& filepath);
+
+// Lightweight companion query for reduction_validate. Missing/default target
+// files are ignored because validation can operate from result files alone.
+[[nodiscard]] bool
+yaml_uses_dimension_shifted_targets(const std::filesystem::path& filepath);

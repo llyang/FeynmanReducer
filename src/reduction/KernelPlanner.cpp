@@ -270,6 +270,7 @@ void BlackBoxFeynman::plan_kernel(
       return seed;
     };
     std::unordered_map<std::size_t, std::vector<SymbolicSignature>> signature_columns;
+    std::vector<bool> symbolic_row_present;
     signature_columns.reserve(raw_ansatz_count);
     const auto column_stays_in_seed_sector = [&](const std::vector<Monomial>& terms,
                                                  std::uint32_t seed_sector) {
@@ -295,6 +296,9 @@ void BlackBoxFeynman::plan_kernel(
       append_column(indexed_ansatz_cols, terms, seed_sector);
       const std::size_t column = indexed_ansatz_cols.size() - 1;
       auto signature = symbolic_signature(column);
+      symbolic_row_present.resize(local_row_map.size(), false);
+      for (const auto& weight : signature)
+        symbolic_row_present.at(static_cast<std::size_t>(weight[0])) = true;
       bool duplicate = signature.empty();
       const auto hash = signature_hash(signature);
       if (!duplicate) {
@@ -322,7 +326,8 @@ void BlackBoxFeynman::plan_kernel(
           static_cast<void>(append_ansatz_candidate(grid_index, seed_sector, family,
                                                     derivative_index, terms));
         });
-    std::vector<bool> matrix_row_present(local_row_map.size(), false);
+    auto matrix_row_present = std::move(symbolic_row_present);
+    matrix_row_present.resize(local_row_map.size(), false);
     const auto mark_matrix_rows = [&](const IndexedColumns& columns) {
       if (matrix_row_present.size() < local_row_map.size())
         matrix_row_present.resize(local_row_map.size(), false);
@@ -332,24 +337,32 @@ void BlackBoxFeynman::plan_kernel(
       }
     };
     mark_matrix_rows(indexed_basis_cols);
-    mark_matrix_rows(indexed_ansatz_cols);
 
-    std::size_t uncovered_rhs_rows = 0;
+    // Target coordinates already belong to local_row_map. A missing matrix row
+    // is an ordinary closure residual, not a malformed projected target.
+    std::set<std::uint32_t> uncovered;
     for (std::size_t target = 0; target < indexed_target_cols.size(); ++target) {
+      std::map<std::uint32_t, T> sums;
       for (const auto& term : indexed_target_cols.column(target)) {
-        if (term.row >= matrix_row_present.size() || !matrix_row_present[term.row]) {
-          ++uncovered_rhs_rows;
+        if (matrix_row_present.at(term.row)) continue;
+        T value = T(term.coeff_int);
+        if (term.coefficient_expression != std::numeric_limits<std::uint32_t>::max()) {
+          value *= coeffs.top_lp_coefficients[term.coefficient_expression];
+        } else {
+          value += T(term.coeff_minus_half_d) * coeffs.minus_half_d;
+          if (term.with_polynomial_coefficient)
+            value *= polynomial_values.at(term.polynomial_term_index);
         }
+        sums[term.row] += value;
       }
+      for (const auto& [row, value] : sums)
+        if (value != T(0)) uncovered.insert(row);
     }
+    const std::size_t uncovered_rhs_rows = uncovered.size();
     if (target_plan != nullptr && progress) {
       progress(
           std::format("Top-LP row coverage: uncovered_rhs_rows={}", uncovered_rhs_rows),
           ReductionProgressEvent::info);
-    }
-    if (target_plan != nullptr && uncovered_rhs_rows != 0) {
-      throw std::runtime_error(
-          "projected nonnegative seed domain does not cover every target row");
     }
     decltype(signature_columns)().swap(signature_columns);
 
@@ -527,6 +540,13 @@ void BlackBoxFeynman::plan_kernel(
       }
       const bool activated_layer = !expansion.points.empty();
       if (!activated_layer) {
+        if (progress && target_plan)
+          progress(std::format("Seed activation unavailable: residual_groups={}, "
+                               "maximum_shift={}, uncovered_target_rows={}",
+                               residual_groups.size(),
+                               std::max(1U, target_plan->maximum_g_shift),
+                               uncovered_rhs_rows),
+                   ReductionProgressEvent::info);
         expansion = reduction::detail::expand_projected_seed_groups(
             envelope_grid, requested, expanded_groups, planner.sectors,
             planner.canonicalizer);
@@ -558,7 +578,10 @@ void BlackBoxFeynman::plan_kernel(
       }
       if (selection.residual_rows.empty() || expansion.groups.empty() ||
           added_points == 0) {
-        throw AnsatzClosureError();
+        throw AnsatzClosureError(
+            std::format("projected closure: no-new-seeds; residual_groups={}, "
+                        "uncovered_target_rows={}",
+                        residual_groups.size(), uncovered_rhs_rows));
       }
       if (activated_layer) {
         activated_groups.insert(expansion.groups.begin(), expansion.groups.end());

@@ -34,9 +34,9 @@ unsigned projected_g_shift(std::span<const int> powers)
 
 ProjectedSeedExpansion activate_projected_seed_groups(
     std::span<const std::vector<int>> envelope,
-    std::span<const ProjectedSeedGroup> residual_groups,
-    const TopLpTargetPlan& targets, const EquationGenerator& equations,
-    const SectorUtils& sectors, const SymmetryCanonicalizer& canonicalizer)
+    std::span<const ProjectedSeedGroup> residual_groups, const TopLpTargetPlan& targets,
+    const EquationGenerator& equations, const SectorUtils& sectors,
+    const SymmetryCanonicalizer& canonicalizer)
 {
   const unsigned maximum_shift = std::max(1U, targets.maximum_g_shift);
   std::set<ProjectedSeedGroup, ProjectedSeedGroupLess> existing;
@@ -112,7 +112,7 @@ ProjectedSeedExpansion expand_projected_seed_groups(
     if (count != expansion_counts.end() &&
         count->second >= maximum_projected_group_expansions) {
       throw AnsatzClosureError(std::format(
-          "projected ansatz residual expansion exceeded {} frontiers for g{}:s{}",
+          "projected closure: dot-budget-exhausted; exceeded {} frontiers for g{}:s{}",
           maximum_projected_group_expansions, key.g_shift, key.sector));
     }
 
@@ -125,7 +125,8 @@ ProjectedSeedExpansion expand_projected_seed_groups(
         if (seed[variable] < 0) continue;
         auto expanded = seed;
         if (expanded[variable] == std::numeric_limits<int>::max())
-          throw std::overflow_error("projected residual dot frontier exceeds int range");
+          throw std::overflow_error(
+              "projected residual dot frontier exceeds int range");
         ++expanded[variable];
         group_points.push_back(std::move(expanded));
       }

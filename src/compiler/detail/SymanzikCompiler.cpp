@@ -755,6 +755,8 @@ TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
     }
     weights[parameter_slot] += value;
   }
+  const ExactRationalConstant lp_polynomial_scale{
+      integer_text(coefficient_denominator_lcm), "1"};
   fmpz_clear(integer_coefficient);
   fmpz_clear(coefficient_multiplier);
   fmpz_clear(coefficient_denominator_lcm);
@@ -809,6 +811,7 @@ TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
   config.propagator_slots = propagator_slots;
   config.kinematic_parameters = kinematic_parameters;
   config.numerics = std::move(numeric_values);
+  config.lp_polynomial_scale = lp_polynomial_scale;
   if (const auto dimension = config.numerics.find("d");
       dimension != config.numerics.end()) {
     config.dimension_value = dimension->second;

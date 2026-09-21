@@ -34,6 +34,9 @@ std::vector<std::uint32_t> active_variables(std::uint32_t sector,
 
 void validate(const TopologyConfig& topology, const Integral& integral)
 {
+  if (integral.dimension_shift % 2 != 0) {
+    throw std::invalid_argument("integral dimension shift must be even");
+  }
   if (integral.indices.size() != topology.integral_count) {
     throw std::invalid_argument("integral length does not match propagator+ISP layout");
   }
@@ -52,6 +55,7 @@ Integral project_active(const TopologyConfig& topology, const Integral& integral
 {
   validate(topology, integral);
   Integral result;
+  result.dimension_shift = integral.dimension_shift;
   result.indices.reserve(topology.propagator_slots.size());
   for (const auto slot : topology.propagator_slots) {
     if (slot >= integral.indices.size()) {
@@ -69,6 +73,7 @@ Integral expand_active(const TopologyConfig& topology, const Integral& integral)
     throw std::invalid_argument("active integral length does not match the topology");
   }
   Integral result;
+  result.dimension_shift = integral.dimension_shift;
   result.indices.assign(topology.integral_count, 0);
   for (std::size_t variable = 0; variable < topology.propagator_slots.size();
        ++variable) {

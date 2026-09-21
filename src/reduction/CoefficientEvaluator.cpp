@@ -19,7 +19,8 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
   const T inverse_two((firefly::FFInt::p >> 1U) + 1U);
   const T half_d = d_val * inverse_two;
   res.minus_half_d = T(0) - half_d;
-  const T d0 = T(cfg.loop_count + 1) * half_d - T(lp_variable_count);
+  const T lp_polynomial_scale =
+      reduction::detail::evaluate_exact_rational(cfg.lp_polynomial_scale);
 
   // 持久化的线程局部内存池（只在首次调用时分配内存）
   // 正确性依赖以下前提，若将来改变需重新评估：
@@ -33,8 +34,6 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
   static thread_local std::vector<T> local_reciprocal_values;
   static thread_local std::vector<T> local_reciprocal_inverses;
   static thread_local std::vector<T> local_reciprocal_prefix;
-  static thread_local std::vector<T> local_positive_delta_products;
-  static thread_local std::vector<T> local_negative_delta_products;
   static thread_local std::vector<T> local_top_lp_coefficients;
   static thread_local std::vector<T> local_extended_polynomial_values;
   static thread_local std::vector<T> local_top_lp_products;
@@ -136,31 +135,11 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
   }
 
   if (normalization != nullptr) selection = normalization;
-  const std::size_t positive_degree = selection == nullptr
-                                          ? maximum_positive_lp_delta
-                                          : selection->maximum_positive_lp_delta;
-  const std::size_t negative_degree = selection == nullptr
-                                          ? maximum_negative_lp_delta
-                                          : selection->maximum_negative_lp_delta;
-  local_positive_delta_products.resize(positive_degree + 1);
-  local_negative_delta_products.resize(negative_degree + 1);
-  local_positive_delta_products[0] = T(1);
-  for (std::size_t degree = 1; degree <= positive_degree; ++degree) {
-    local_positive_delta_products[degree] =
-        local_positive_delta_products[degree - 1] * (d0 - T(degree));
-  }
-  local_negative_delta_products[0] = T(1);
-  for (std::size_t degree = 1; degree <= negative_degree; ++degree) {
-    local_negative_delta_products[degree] =
-        local_negative_delta_products[degree - 1] * (d0 + T(degree - 1));
-  }
-
   const auto evaluate_lp_program = [&](const std::size_t program) {
     if (program >= lp_programs.size())
       throw std::logic_error("selected LP normalization program is out of range");
     const auto fraction =
-        evaluate_lp_fraction<T>(lp_programs[program], local_positive_delta_products,
-                                local_negative_delta_products);
+        evaluate_lp_fraction<T>(lp_programs[program], half_d, lp_polynomial_scale);
     local_lp_numerators[program] = fraction.numerator;
     local_lp_denominators[program] = fraction.denominator;
   };

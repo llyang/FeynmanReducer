@@ -10,10 +10,23 @@ namespace {
 
 void validate_result(const ReductionResult& result)
 {
+  const std::size_t output_count =
+      result.outputs.empty() ? result.targets.size() : result.outputs.size();
   if (!result.context ||
-      result.coefficients.size() != result.targets.size() * result.basis.size()) {
+      result.coefficients.size() != output_count * result.basis.size()) {
     throw std::runtime_error("invalid reduction result shape");
   }
+}
+
+std::string output_label(const ReductionResult& result, std::size_t output)
+{
+  if (result.outputs.empty())
+    return format_mathematica_integral(result.integral_header,
+                                       result.targets.at(output));
+  const auto& descriptor = result.outputs.at(output);
+  return descriptor.named
+             ? descriptor.name
+             : format_mathematica_integral(result.integral_header, descriptor.integral);
 }
 
 } // namespace
@@ -24,7 +37,7 @@ void write_basis_integrals(const std::vector<Integral>& basis,
 {
   core::atomic_file::write(output, "final basis", [&](std::ostream& stream) {
     for (const auto& integral : basis) {
-      stream << format_mathematica_integral(header, integral.indices) << '\n';
+      stream << format_mathematica_integral(header, integral) << '\n';
     }
   });
 }
@@ -37,19 +50,17 @@ void write_mathematica_result(const ReductionResult& result,
   basis_labels.reserve(result.basis.size());
   for (const auto& integral : result.basis)
     basis_labels.push_back(
-        format_mathematica_integral(result.integral_header, integral.indices));
+        format_mathematica_integral(result.integral_header, integral));
   core::atomic_file::write(output, "Mathematica result", [&](std::ostream& stream) {
     std::size_t flat = 0;
     stream << "{\n";
-    for (std::size_t target_index = 0; target_index < result.targets.size();
-         ++target_index) {
+    const std::size_t output_count =
+        result.outputs.empty() ? result.targets.size() : result.outputs.size();
+    for (std::size_t target_index = 0; target_index < output_count; ++target_index) {
       if (target_index != 0) {
         stream << ",\n";
       }
-      const auto& target = result.targets[target_index];
-      stream << "  "
-             << format_mathematica_integral(result.integral_header, target.indices)
-             << " -> ";
+      stream << "  " << output_label(result, target_index) << " -> ";
       bool wrote_term = false;
       for (std::size_t index = 0; index < result.basis.size(); ++index) {
         const FactorizedRational& original = result.coefficients.at(flat++);

@@ -28,5 +28,6 @@ struct TopLpTargetPlan {
   unsigned maximum_g_shift = 0;
 };
 
-/// Compiles exact boundary projections for negative-index targets.
+/// Compiles exact boundary projections for negative-index and dimension-shifted
+/// targets.
 [[nodiscard]] TopLpTargetPlan compile_top_lp_target_plan(const Config& config);

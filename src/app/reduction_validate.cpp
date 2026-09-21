@@ -76,6 +76,14 @@ int main(int argc, char** argv)
                                options.config.string());
     }
     const auto parent = options.config.parent_path();
+    if (yaml_uses_combination_targets(options.config)) {
+      throw std::runtime_error(
+          "named-combination results are not supported by reduction_validate");
+    }
+    if (yaml_uses_dimension_shifted_targets(options.config)) {
+      throw std::runtime_error(
+          "dimension-shifted targets are not supported by reduction_validate");
+    }
     const auto numerics = compile_yaml_numerics(options.config);
     auto kira_result =
         resolve(parent, options.kira_result, "validation/kira_integrals.m");

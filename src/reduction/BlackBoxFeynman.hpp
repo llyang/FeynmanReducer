@@ -521,6 +521,7 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
     std::int64_t index_sum = 0;
     std::int64_t delta = 0;
     std::vector<std::int64_t> denominator_factors;
+    std::int64_t half_dimension_shift = 0;
 
     bool operator==(const LpProgram&) const = default;
   };
@@ -539,27 +540,64 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
 
   /// Evaluate an LP normalization without performing a field division.
   template <typename T>
-  LpFraction<T> evaluate_lp_fraction(const LpProgram& program,
-                                     std::span<const T> positive_delta_products,
-                                     std::span<const T> negative_delta_products) const
+  LpFraction<T> evaluate_lp_fraction(const LpProgram& program, const T& half_d,
+                                     const T& lp_polynomial_scale) const
   {
     T num(1), den(1);
     if (program.index_sum % 2 != 0) num = T(0) - num; // (-1)^A
+    const T base_d0 = T(cfg.loop_count + 1) * half_d - T(lp_variable_count);
+    const T shifted_d0 =
+        base_d0 + T(cfg.loop_count + 1) * T(program.half_dimension_shift);
     if (program.delta > 0) {
-      const auto degree = static_cast<std::size_t>(program.delta);
-      if (degree >= positive_delta_products.size())
-        throw std::logic_error("positive LP delta product is unavailable");
-      num = num * positive_delta_products[degree];
+      for (std::int64_t degree = 1; degree <= program.delta; ++degree)
+        num = num * (shifted_d0 - T(degree));
     } else if (program.delta < 0) {
       if (program.delta == std::numeric_limits<std::int64_t>::min())
         throw std::overflow_error("negative LP delta exceeds size_t");
-      const auto degree = static_cast<std::size_t>(-program.delta);
-      if (degree >= negative_delta_products.size())
-        throw std::logic_error("negative LP delta product is unavailable");
-      den = den * negative_delta_products[degree];
+      for (std::int64_t degree = 0; degree < -program.delta; ++degree)
+        den = den * (shifted_d0 + T(degree));
     }
     for (const std::int64_t factor : program.denominator_factors)
       den = den * T(factor);
+
+    // Restore the dimension-dependent common factor omitted by same-dimension
+    // LP normalization:
+    //   C(D) = Gamma(D/2) / Gamma((L+1)D/2-n).
+    // Only C(d+2q)/C(d) is needed, hence all factors remain rational in d.
+    const auto loop_factor = static_cast<std::int64_t>(cfg.loop_count) + 1;
+    std::int64_t d0_steps = 0;
+    if (__builtin_mul_overflow(loop_factor, program.half_dimension_shift, &d0_steps)) {
+      throw std::overflow_error("dimension-shift normalization degree exceeds int64");
+    }
+    if (program.half_dimension_shift > 0) {
+      for (std::int64_t step = 0; step < program.half_dimension_shift; ++step)
+        num = num * (half_d + T(step));
+      for (std::int64_t step = 0; step < d0_steps; ++step)
+        den = den * (base_d0 + T(step));
+    } else if (program.half_dimension_shift < 0) {
+      for (std::int64_t step = -1; step >= program.half_dimension_shift; --step)
+        den = den * (half_d + T(step));
+      for (std::int64_t step = -1; step >= d0_steps; --step)
+        num = num * (base_d0 + T(step));
+    }
+
+    auto power = [](T base, std::uint64_t exponent) {
+      T result(1);
+      while (exponent != 0) {
+        if ((exponent & 1U) != 0) result = result * base;
+        exponent >>= 1U;
+        if (exponent != 0) base = base * base;
+      }
+      return result;
+    };
+    if (program.half_dimension_shift > 0) {
+      num = num * power(lp_polynomial_scale,
+                        static_cast<std::uint64_t>(program.half_dimension_shift));
+    } else if (program.half_dimension_shift < 0) {
+      const auto exponent =
+          static_cast<std::uint64_t>(-(program.half_dimension_shift + 1)) + 1U;
+      den = den * power(lp_polynomial_scale, exponent);
+    }
     return {num, den};
   }
 

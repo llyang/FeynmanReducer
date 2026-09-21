@@ -147,6 +147,10 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
                                 !options.master_basis_globally_selected)
 {
   for (const auto& master : cfg.basis) {
+    if (master.dimension_shift != 0) {
+      throw std::invalid_argument(
+          "dimension-shifted integrals are not supported in the master basis");
+    }
     if (std::ranges::any_of(master.indices, [](int index) { return index < 0; })) {
       throw std::invalid_argument(
           "negative indices are not supported in the master basis");
@@ -235,6 +239,7 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
         active_integral = integral_layout::project_active(cfg, integral);
       }
       LpProgram program;
+      program.half_dimension_shift = active_integral.dimension_shift / 2;
       for (const int index : active_integral.indices) {
         if (__builtin_add_overflow(program.index_sum, static_cast<std::int64_t>(index),
                                    &program.index_sum)) {

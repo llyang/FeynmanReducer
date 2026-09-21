@@ -90,9 +90,12 @@ int main(int argc, char** argv)
     });
     timing.summary(std::format(
         "Configuration: input={}, active_propagators={}, integral_slots={}, "
-        "targets={}, parameters={}",
+        "source_targets={}, outputs={}, parameters={}",
         options.input.string(), config.propagator_count, config.integral_count,
-        config.targets.size(), config.parameters.size()));
+        config.targets.size(),
+        config.reduction_requests.empty() ? config.targets.size()
+                                          : config.reduction_requests.size(),
+        config.parameters.size()));
     if (config.symmetry) {
       std::size_t subsector_generator_count = 0;
       for (const auto& sector_class : config.symmetry->sector_classes) {

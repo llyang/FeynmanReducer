@@ -248,6 +248,7 @@ endif()
 
 add_library(feynman_reducer_compiler STATIC
   src/compiler/YamlCompiler.cpp
+  src/compiler/detail/CombinationParser.cpp
   src/compiler/detail/ExactPolynomial.cpp
   src/compiler/detail/ExpressionParser.cpp
   src/compiler/detail/IntegralParser.cpp

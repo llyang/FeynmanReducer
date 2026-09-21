@@ -9,6 +9,7 @@
 #include "reduction/DSeparationCheck.hpp"
 #include "reduction/FireflyResultImport.hpp"
 #include "reduction/ParameterEvaluation.hpp"
+#include "reduction/RequestedOutputBlackBox.hpp"
 #include "reduction/ScaleReconstruction.hpp"
 
 #include <firefly/Reconstructor.hpp>
@@ -36,6 +37,15 @@ ReductionResult reconstruct_prepared(Config& config,
   if (config.threads == 0) {
     throw std::runtime_error("thread count must be positive");
   }
+  using Requested = reduction::detail::RequestedOutputBlackBox<BlackBox>;
+  auto requested_black_box =
+      std::make_unique<Requested>(config, std::move(native_black_box));
+  if (progress && !config.reduction_requests.empty())
+    progress(std::format("Requested outputs: source_targets={}, requests={}, "
+                         "reconstructed_candidates={}",
+                         config.targets.size(), config.reduction_requests.size(),
+                         requested_black_box->reconstructed_outputs().size()),
+             ReductionProgressEvent::info);
   constexpr unsigned maximum_bunch_size = 1;
   std::optional<std::size_t> scale;
   std::uint64_t scan_probes = 0;
@@ -55,14 +65,14 @@ ReductionResult reconstruct_prepared(Config& config,
         config.parameters.begin());
   } else if (enabled && config.scale_homogeneous &&
              !config.reconstruction_scale_candidates.empty() &&
-             !native_black_box->reconstructed_outputs().empty()) {
+             !requested_black_box->reconstructed_outputs().empty()) {
     std::vector<std::uint32_t> degrees(config.parameters.size(), 0);
     if (config.reconstruction_scale_candidates.size() > 1) {
       degrees = run_reduction_stage(progress, "Select reconstruction scale", [&] {
         firefly::RatReconst::reset();
-        firefly::Reconstructor<BlackBox> scanner(
+        firefly::Reconstructor<Requested> scanner(
             static_cast<unsigned>(config.parameters.size()), config.threads,
-            maximum_bunch_size, *native_black_box);
+            maximum_bunch_size, *requested_black_box);
         scanner.enable_factor_scan();
         scanner.stop_after_factor_scan();
         scanner.reconstruct();
@@ -101,8 +111,8 @@ ReductionResult reconstruct_prepared(Config& config,
     reconstruction_parameters.erase(reconstruction_parameters.begin() +
                                     static_cast<std::ptrdiff_t>(*scale));
   }
-  using Adapter = reduction::detail::ScaleBlackBox<BlackBox>;
-  auto black_box = std::make_unique<Adapter>(std::move(native_black_box), scale);
+  using Adapter = reduction::detail::ScaleBlackBox<Requested>;
+  auto black_box = std::make_unique<Adapter>(std::move(requested_black_box), scale);
   auto context = std::make_shared<FlintRationalContext>(config.parameters);
   auto reconstruction_context =
       scale ? std::make_shared<FlintRationalContext>(reconstruction_parameters)
@@ -173,14 +183,15 @@ ReductionResult reconstruct_prepared(Config& config,
       run_reduction_stage(progress, "Materialize reduction result", [&] {
         const auto reconstructed_outputs = black_box->reconstructed_outputs();
         const std::size_t full_output_count = black_box->total_output_count();
-        ReductionResult result{config.integral_header,
-                               config.parameters,
-                               config.numerics,
-                               config.basis,
-                               config.targets,
-                               context,
-                               {},
-                               {}};
+        ReductionResult result;
+        result.integral_header = config.integral_header;
+        result.parameters = config.parameters;
+        result.numerics = config.numerics;
+        result.basis = config.basis;
+        result.targets = config.targets;
+        for (const auto& request : black_box->native->requests())
+          result.outputs.push_back(request.output);
+        result.context = context;
         result.coefficients.reserve(full_output_count);
         for (std::size_t output = 0; output < full_output_count; ++output)
           result.coefficients.emplace_back(context);
@@ -194,7 +205,7 @@ ReductionResult reconstruct_prepared(Config& config,
           if (scale)
             value = reduction::detail::restore_reconstruction_scale(
                 value, context, *scale,
-                config.targets.at(full_position / config.basis.size()),
+                result.outputs.at(full_position / config.basis.size()).scale_offset,
                 config.basis.at(full_position % config.basis.size()));
           result.coefficients[full_position] = std::move(value);
           ++received;
