@@ -282,6 +282,7 @@ add_library(feynman_reducer_reduction STATIC
   src/reduction/EquationGenerator.cpp
   src/reduction/ScaleReconstruction.cpp
   src/reduction/DSeparationCheck.cpp
+  src/reduction/DifferentialEquations.cpp
   src/reduction/FireflyResultImport.cpp
   src/reduction/FeynmanReducer.cpp
   src/masters/detail/GlobalBasisSelector.cpp

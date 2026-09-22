@@ -84,6 +84,10 @@ int main(int argc, char** argv)
       throw std::runtime_error(
           "dimension-shifted targets are not supported by reduction_validate");
     }
+    if (yaml_generates_differential_equations(options.config)) {
+      throw std::runtime_error(
+          "differential-equation results are not supported by reduction_validate");
+    }
     const auto numerics = compile_yaml_numerics(options.config);
     auto kira_result =
         resolve(parent, options.kira_result, "validation/kira_integrals.m");

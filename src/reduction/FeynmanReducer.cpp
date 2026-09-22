@@ -7,6 +7,7 @@
 #include "reduction/BlackBoxFeynman.hpp"
 #include "reduction/ConstantRationalReconstruction.hpp"
 #include "reduction/DSeparationCheck.hpp"
+#include "reduction/DifferentialEquations.hpp"
 #include "reduction/FireflyResultImport.hpp"
 #include "reduction/ParameterEvaluation.hpp"
 #include "reduction/RequestedOutputBlackBox.hpp"
@@ -189,6 +190,8 @@ ReductionResult reconstruct_prepared(Config& config,
         result.numerics = config.numerics;
         result.basis = config.basis;
         result.targets = config.targets;
+        if (config.differential_equations)
+          result.differential_parameters = config.kinematic_parameters;
         for (const auto& request : black_box->native->requests())
           result.outputs.push_back(request.output);
         result.context = context;
@@ -313,6 +316,8 @@ ReductionResult perform_reduction_impl(Config& config,
 
   options.d_separating_kernel = DSeparatingKernelStrategy::SharedOracle;
   auto black_box = run_reduction_stage(progress, "Prepare reduction kernel", [&] {
+    if (candidates == nullptr)
+      reduction::detail::materialize_differential_equations(config);
     return candidates == nullptr
                ? BlackBoxFeynman::prepare(config, progress, options)
                : BlackBoxFeynman::prepare(config, *candidates, progress, options);

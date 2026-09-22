@@ -56,6 +56,13 @@ struct BasisIntegralPool {
                                                unsigned maximum_candidate_dots);
 };
 
+// Builds the deterministic target set used exclusively for D-separating basis
+// discovery: all symmetry-inequivalent d-dimensional top-sector integrals with
+// both dots on one propagator (exactly one index equal to three). User-requested
+// source integrals are validated only after a basis has been selected.
+[[nodiscard]] std::vector<Integral>
+build_d_separating_search_targets(const TopologyConfig& topology);
+
 enum class DSeparatingBasisSearchStatus {
   Passed,
   NotFound,
@@ -70,7 +77,10 @@ struct DSeparatingBasisSwap {
   std::uint32_t sector = 0;
   bool repairs_primary = false;
   bool pivot_numerator_stable = false;
+  std::size_t witnesses_considered = 0;
+  std::size_t witnesses_repaired = 0;
   std::size_t child_mixed_degree = 0;
+  std::size_t child_total_mixed_degree = 0;
   std::size_t pivot_mixed_degree = 0;
   std::size_t pivot_numerator_degree = 0;
 };
@@ -139,6 +149,8 @@ struct DSeparatingBasisSearchReport {
   std::size_t raw_pairs = 0;
   std::size_t scored_pairs = 0;
   std::size_t pair_sampling_failures = 0;
+  std::size_t maximum_moving_witnesses = 0;
+  std::size_t maximum_moving_witness_slots = 0;
   std::size_t beam_discarded = 0;
   std::size_t seen_suppressed = 0;
   std::vector<std::size_t> shortlisted_by_slot;
@@ -198,6 +210,17 @@ rebase_after_basis_swaps(const PrimeField& field,
 
 [[nodiscard]] PreparedDSeparatingBasisSearch prepare_d_separating_basis_search(
     Config config, std::vector<Integral> initial_basis,
+    std::span<const std::uint32_t> relation_source_sectors,
+    const DSeparatingBasisSearchOptions& options = {},
+    DSeparatingBasisProgressCallback progress = {},
+    ReductionOptions reduction_options = {});
+
+// Strictly validates one fixed basis and retains the exact oracle used for the
+// validation as the final reduction kernel. No alternative masters or swaps
+// are considered.
+[[nodiscard]] PreparedDSeparatingBasisSearch
+prepare_d_separating_fixed_basis_validation(
+    Config config, std::vector<Integral> basis,
     std::span<const std::uint32_t> relation_source_sectors,
     const DSeparatingBasisSearchOptions& options = {},
     DSeparatingBasisProgressCallback progress = {},

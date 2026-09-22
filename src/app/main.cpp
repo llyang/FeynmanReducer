@@ -23,6 +23,7 @@ struct Options {
   std::filesystem::path output_directory;
   std::filesystem::path mathematica_output;
   std::filesystem::path basis_output;
+  std::filesystem::path differential_equations_output;
   std::filesystem::path firefly_log_output;
   std::optional<unsigned> threads;
 };
@@ -64,6 +65,8 @@ Options parse_arguments(int argc, char** argv)
   options.output_directory = parent / "outputs";
   options.mathematica_output = options.output_directory / "results.m";
   options.basis_output = options.output_directory / "final_basis.txt";
+  options.differential_equations_output =
+      options.output_directory / "differential_equations.m";
   options.firefly_log_output = options.output_directory / "firefly.log";
   return options;
 }
@@ -150,12 +153,20 @@ int main(int argc, char** argv)
     timing.run_stage("Write output files", [&] {
       archived_firefly_log = firefly_log.finish();
       write_mathematica_result(result, options.mathematica_output);
+      if (!result.differential_parameters.empty()) {
+        write_mathematica_differential_equations(result,
+                                                 options.differential_equations_output);
+      }
       write_basis_integrals(result.basis, result.integral_header, options.basis_output);
     });
     timing.summary(std::format("Output: type=mathematica, path={}",
                                options.mathematica_output.string()));
     timing.summary(
         std::format("Output: type=basis, path={}", options.basis_output.string()));
+    if (!result.differential_parameters.empty()) {
+      timing.summary(std::format("Output: type=differential_equations, path={}",
+                                 options.differential_equations_output.string()));
+    }
     if (archived_firefly_log) {
       timing.summary(std::format("Output: type=firefly_log, path={}",
                                  options.firefly_log_output.string()));

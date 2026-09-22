@@ -35,3 +35,4 @@ shift_scan: true
 basis_selection: "d-separating"
 
 targets_file: "targets.txt"
+differential_equations: true

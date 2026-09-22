@@ -218,7 +218,8 @@ Integral parse_integral_node(const YAML::Node& node, const Config& config)
     throw std::runtime_error("combination integral must be a headed scalar expression");
   try {
     Integral result =
-        parse_integral_expression(node.as<std::string>(), config.integral_count);
+        parse_integral_expression(node.as<std::string>(), config.integral_count,
+                                  config.integral_header);
     integral_layout::validate(config, result);
     return result;
   } catch (const std::exception& error) {

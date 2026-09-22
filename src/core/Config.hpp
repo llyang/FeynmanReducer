@@ -34,6 +34,10 @@ struct ReductionOutput {
   // Under a common rescaling of all kinematic invariants, a coefficient of
   // this output in front of master b scales as scale_offset + sum(b).
   std::int64_t scale_offset = 0;
+  // Generated differential-equation rows keep the differentiated master in
+  // integral and the free kinematic variable in differential_parameter.
+  bool differential = false;
+  std::string differential_parameter;
 
   bool operator==(const ReductionOutput&) const = default;
 };
@@ -155,4 +159,7 @@ struct Config : MasterFinderConfig {
   bool factor_scan = false;
   bool shift_scan = false;
   std::string reconstruction_scale = "auto";
+  // Generate one master-integral differential system for every free
+  // kinematic parameter after the final basis has been selected.
+  bool differential_equations = false;
 };

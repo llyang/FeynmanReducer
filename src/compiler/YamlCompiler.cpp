@@ -29,7 +29,7 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
   if (!root.IsMap()) {
     throw std::runtime_error("top-level YAML value must be a mapping");
   }
-  static constexpr std::array<std::string_view, 14> allowed_fields{
+  static constexpr std::array<std::string_view, 15> allowed_fields{
       "reconstruction_scale",
       "kinematics",
       "propagators",
@@ -43,7 +43,8 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
       "shift_scan",
       "basis_selection",
       "numerics",
-      "check_master_independence"};
+      "check_master_independence",
+      "differential_equations"};
   for (const auto& entry : root) {
     if (!entry.first.IsScalar()) {
       throw std::runtime_error("top-level config field names must be strings");
@@ -124,7 +125,8 @@ void append_integral_requests(
     std::set<std::pair<int, std::vector<int>>>& integral_outputs)
 {
   for (auto& integral :
-       compiler::detail::parse_integrals(path, config.integral_count)) {
+       compiler::detail::parse_integrals(path, config.integral_count,
+                                         config.integral_header)) {
     validate_target(config, integral);
     if (!integral_outputs.insert({integral.dimension_shift, integral.indices}).second)
       throw std::runtime_error("duplicate target integral across target files");
@@ -158,6 +160,7 @@ void compile_targets(const YAML::Node& root, const std::filesystem::path& parent
                      Config& config)
 {
   const YAML::Node configured = root["targets_file"];
+  if (!configured && config.differential_equations) return;
   if (!configured || configured.IsScalar()) {
     const std::string filename =
         configured ? configured.as<std::string>() : std::string("targets.txt");
@@ -168,7 +171,8 @@ void compile_targets(const YAML::Node& root, const std::filesystem::path& parent
       std::set<std::string> names;
       append_combination_requests(config, path, names);
     } else {
-      config.targets = compiler::detail::parse_integrals(path, config.integral_count);
+      config.targets = compiler::detail::parse_integrals(
+          path, config.integral_count, config.integral_header);
       for (const auto& target : config.targets)
         validate_target(config, target);
     }
@@ -223,6 +227,12 @@ Config compile_yaml_config(const std::filesystem::path& filepath)
   Config config;
   static_cast<TopologyConfig&>(config) =
       compiler::detail::compile_yaml_topology_node(root);
+  if (root["differential_equations"])
+    config.differential_equations = root["differential_equations"].as<bool>();
+  if (config.differential_equations && config.kinematic_parameters.empty()) {
+    throw std::runtime_error(
+        "differential_equations requires at least one free kinematic parameter");
+  }
   const std::filesystem::path parent = filepath.parent_path();
   compile_targets(root, parent, config);
   compile_master_finder_options(root, config);
@@ -319,4 +329,11 @@ bool yaml_uses_dimension_shifted_targets(const std::filesystem::path& filepath)
     }
   }
   return false;
+}
+
+bool yaml_generates_differential_equations(const std::filesystem::path& filepath)
+{
+  const YAML::Node root = load_yaml_root(filepath);
+  const YAML::Node enabled = root["differential_equations"];
+  return enabled && enabled.as<bool>();
 }

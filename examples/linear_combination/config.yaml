@@ -32,4 +32,6 @@ threads: 24
 factor_scan: true
 shift_scan: true
 
+basis_selection: "d-separating"
+
 targets_file: ["targets.txt", "targets.yaml"]

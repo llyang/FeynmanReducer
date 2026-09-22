@@ -13,3 +13,6 @@ void write_basis_integrals(const std::vector<Integral>& basis,
 
 void write_mathematica_result(const ReductionResult& result,
                               const std::filesystem::path& output);
+
+void write_mathematica_differential_equations(const ReductionResult& result,
+                                              const std::filesystem::path& output);

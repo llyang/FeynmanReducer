@@ -10,6 +10,9 @@
 
 enum class DSeparationStatus { NotChecked, Passed, Failed, Skipped };
 struct DSeparationReport {
+  // In D-separating mode, Passed covers the source-integral basis-selection
+  // certificate plus exact rechecks of standalone integral outputs. Contracted
+  // named combinations and differential-equation entries are not rechecked.
   DSeparationStatus status = DSeparationStatus::NotChecked;
   std::size_t failed_coefficients = 0;
   std::string witness;
@@ -24,6 +27,9 @@ struct ReductionResult {
   // are indexed by outputs, not by this vector, when combinations are used.
   std::vector<Integral> targets;
   std::vector<ReductionOutput> outputs;
+  // Empty when differential-equation generation is disabled. Otherwise this
+  // is the matrix output order and matches TopologyConfig::kinematic_parameters.
+  std::vector<std::string> differential_parameters;
   std::shared_ptr<const FlintRationalContext> context;
   // output-major, then basis-major.
   std::vector<FactorizedRational> coefficients;

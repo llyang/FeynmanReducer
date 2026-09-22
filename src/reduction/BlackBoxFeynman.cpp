@@ -1,6 +1,7 @@
 #include "reduction/BlackBoxFeynman.hpp"
 #include "core/ProbeValues.hpp"
 #include "masters/detail/GlobalBasisSelector.hpp"
+#include "reduction/DifferentialEquations.hpp"
 #include "reduction/EliminationTape.hpp"
 #include "reduction/FiniteFieldArithmetic.hpp"
 #include "reduction/KernelErrors.hpp"
@@ -410,6 +411,7 @@ BlackBoxFeynman::prepare(Config& config, const masters::MasterCandidateSet& cand
         std::chrono::duration<double>(std::chrono::high_resolution_clock::now() -
                                       selection_start)
             .count();
+    reduction::detail::materialize_differential_equations(config);
     if (progress) {
       progress(std::format("Projected master preselection: input={}, selected={}, "
                            "elapsed_ms={:.2f}",

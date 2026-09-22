@@ -9,9 +9,11 @@
 namespace compiler::detail {
 
 [[nodiscard]] std::vector<Integral> parse_integrals(const std::filesystem::path& path,
-                                                    unsigned expected_size);
+                                                    unsigned expected_size,
+                                                    std::string_view expected_header);
 
 [[nodiscard]] Integral parse_integral_expression(std::string_view expression,
-                                                 unsigned expected_size);
+                                                 unsigned expected_size,
+                                                 std::string_view expected_header);
 
 } // namespace compiler::detail

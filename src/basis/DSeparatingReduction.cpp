@@ -1,6 +1,8 @@
 #include "basis/DSeparatingReduction.hpp"
 
 #include "basis/FiniteField.hpp"
+#include "core/IntegralFormatting.hpp"
+#include "reduction/DifferentialEquations.hpp"
 #include "reduction/KernelPlanning.hpp"
 
 #include <algorithm>
@@ -8,6 +10,7 @@
 #include <format>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <utility>
@@ -28,6 +31,54 @@ std::size_t find_integral(std::span<const Integral> values, const Integral& inte
   if (found == values.end())
     throw std::logic_error("D-separating replay row is absent from prepared batch");
   return static_cast<std::size_t>(found - values.begin());
+}
+
+void compact_differential_targets(Config& config,
+                                  std::vector<std::uint32_t>& output_support,
+                                  std::size_t basis_size)
+{
+  if (config.targets.empty())
+    throw std::logic_error("differential target registry is empty");
+  std::vector<bool> used(config.targets.size(), false);
+  for (const auto& request : config.reduction_requests) {
+    for (const auto& term : request.terms) {
+      if (term.target >= used.size())
+        throw std::logic_error("differential request target is out of range");
+      used[term.target] = true;
+    }
+  }
+  // An all-zero system still needs one native target to prepare the oracle.
+  if (std::ranges::none_of(used, [](bool value) { return value; })) used[0] = true;
+
+  const auto invalid = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::uint32_t> remap(config.targets.size(), invalid);
+  std::vector<Integral> compact;
+  compact.reserve(config.targets.size());
+  for (std::size_t old = 0; old < config.targets.size(); ++old) {
+    if (!used[old]) continue;
+    remap[old] = static_cast<std::uint32_t>(compact.size());
+    compact.push_back(config.targets[old]);
+  }
+  for (auto& request : config.reduction_requests)
+    for (auto& term : request.terms)
+      term.target = remap.at(term.target);
+
+  std::vector<std::uint32_t> compact_support;
+  compact_support.reserve(output_support.size());
+  for (const std::uint32_t position : output_support) {
+    const std::size_t old_target = position / basis_size;
+    const std::size_t basis = position % basis_size;
+    if (old_target >= remap.size())
+      throw std::logic_error("D-separating output support target is out of range");
+    if (remap[old_target] == invalid) continue;
+    const std::size_t next =
+        static_cast<std::size_t>(remap[old_target]) * basis_size + basis;
+    if (next > std::numeric_limits<std::uint32_t>::max())
+      throw std::overflow_error("compacted D-separating output exceeds 32-bit ids");
+    compact_support.push_back(static_cast<std::uint32_t>(next));
+  }
+  config.targets = std::move(compact);
+  output_support = std::move(compact_support);
 }
 
 } // namespace
@@ -81,8 +132,7 @@ DSeparatingReduction::DSeparatingReduction(PreparedDSeparatingBasisSearch prepar
     if (progress)
       progress(std::format("Shared dependency selection: components={}, "
                            "original_row_components={}, mode={}",
-                           inputs.size(), rows.size() * selected_basis.size(),
-                           "rows"),
+                           inputs.size(), rows.size() * selected_basis.size(), "rows"),
                ReductionProgressEvent::info);
   }
   full_selection_plan_ = build_selection_plan(all_outputs);
@@ -101,7 +151,6 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
     std::span<const std::uint32_t> relation_source_sectors,
     ReductionProgressCallback progress, ReductionOptions options)
 {
-  auto original_targets = output_config.targets;
   DSeparatingBasisSearchOptions search_options;
   search_options.strategy = options.d_separating_search;
   if (progress)
@@ -110,27 +159,76 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
              ReductionProgressEvent::info);
   auto search_progress = [&](std::string_view message) {
     if (progress)
-      progress(std::format("D-separating basis: {}", message),
+      progress(std::format("D-separating search: {}", message),
                ReductionProgressEvent::info);
   };
-  auto prepared = prepare_d_separating_basis_search(
-      output_config, std::move(initial_basis), relation_source_sectors, search_options,
+
+  auto search = prepare_d_separating_basis_search(
+      output_config, initial_basis, relation_source_sectors, search_options,
       search_progress, options);
-  if (prepared.report.status != DSeparatingBasisSearchStatus::Passed) {
-    throw std::runtime_error(std::format("D-separating basis selection failed: {}",
-                                         prepared.report.message));
+  if (search.report.status != DSeparatingBasisSearchStatus::Passed) {
+    throw std::runtime_error(
+        std::format("D-separating basis selection failed: {}", search.report.message));
   }
-  auto selected_basis = prepared.report.selected_basis;
+  const auto selection_report = search.report;
+  auto selected_basis = search.report.selected_basis;
+  search.oracle.reset();
+
+  Config final_config = output_config;
+  if (final_config.differential_equations) {
+    const auto differential_sources =
+        reduction::detail::prepare_differential_equation_sources(final_config,
+                                                                 selected_basis);
+    reduction::detail::append_differential_equation_requests(
+        final_config, differential_sources, selected_basis);
+  }
+  auto validation_progress = [&](std::string_view message) {
+    if (progress)
+      progress(std::format("D-separating validation: {}", message),
+               ReductionProgressEvent::info);
+  };
+  auto prepared = prepare_d_separating_fixed_basis_validation(
+      final_config, selected_basis, relation_source_sectors, search_options,
+      validation_progress, options);
+  if (prepared.report.status != DSeparatingBasisSearchStatus::Passed) {
+    std::string detail = prepared.report.message;
+    if (const auto& witness = prepared.report.primary_witness) {
+      detail += std::format(
+          "; target={}, component={}, sector={}, mixed_degree={}",
+          format_mathematica_integral(final_config.integral_header, witness->target),
+          witness->component, witness->sector, witness->mixed_degree);
+      if (witness->component < selected_basis.size())
+        detail += std::format(", master={}", format_mathematica_integral(
+                                                 final_config.integral_header,
+                                                 selected_basis[witness->component]));
+    }
+    throw std::runtime_error(
+        std::format("D-separating fixed-basis validation failed: {}", detail));
+  }
+  if (prepared.report.selected_basis != selected_basis)
+    throw std::logic_error("fixed D-separating validation changed the selected basis");
+  if (final_config.differential_equations)
+    compact_differential_targets(final_config, prepared.final_output_support,
+                                 selected_basis.size());
+  output_config = std::move(final_config);
+  auto original_targets = output_config.targets;
   if (progress) {
     progress(std::format(
                  "D-separating basis selected: masters={}, candidates={}, states={}, "
                  "swaps={}, probes={}, elapsed_ms={:.2f}",
-                 selected_basis.size(), prepared.report.candidate_pool_size,
-                 prepared.report.basis_states_tested, prepared.report.swap_path.size(),
-                 prepared.report.probe_statistics.selected_replay_calls,
-                 prepared.report.timing.total_seconds * 1000.0),
+                 selected_basis.size(), selection_report.candidate_pool_size,
+                 selection_report.basis_states_tested,
+                 selection_report.swap_path.size(),
+                 selection_report.probe_statistics.selected_replay_calls,
+                 selection_report.timing.total_seconds * 1000.0),
              ReductionProgressEvent::info);
-    progress(std::format("D-separating cold phases: native_prepare_ms={:.2f}, "
+    progress(std::format("D-separating fixed validation: targets={}, probes={}, "
+                         "elapsed_ms={:.2f}",
+                         prepared.report.validation_targets.size(),
+                         prepared.report.probe_statistics.selected_replay_calls,
+                         prepared.report.timing.total_seconds * 1000.0),
+             ReductionProgressEvent::info);
+    progress(std::format("D-separating validation cold phases: native_prepare_ms={:.2f}, "
                          "rank_ms={:.2f}, screening_ms={:.2f}, pivot_ms={:.2f}, "
                          "strict_ms={:.2f}, probe_ms={:.2f}, rebase_ms={:.2f}, "
                          "interpolation_ms={:.2f}, signature_ms={:.2f}",
@@ -145,7 +243,7 @@ std::unique_ptr<DSeparatingReduction> DSeparatingReduction::prepare(
                          prepared.report.timing.signature_comparison_seconds * 1000.0),
              ReductionProgressEvent::info);
     progress(std::format(
-                 "D-separating adaptive validation: interpolation_attempts={}, "
+                 "D-separating validation sampling: interpolation_attempts={}, "
                  "model_cache_hits={}, fixed_degree_attempts={}, thiele_attempts={}, "
                  "exhaustive_fallbacks={}, avoided_basis_factorizations={}",
                  prepared.report.probe_statistics.rational_interpolation_attempts,

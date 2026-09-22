@@ -100,11 +100,15 @@ std::vector<int> parse_list(IntegralCursor& cursor, char open, char close)
   }
 }
 
-Integral parse_one(IntegralCursor& cursor, unsigned expected_size)
+Integral parse_one(IntegralCursor& cursor, unsigned expected_size,
+                   std::string_view expected_header)
 {
   Integral result;
   const std::string head = cursor.identifier();
-  static_cast<void>(head);
+  if (head != expected_header)
+    throw std::runtime_error("integral head '" + head +
+                             "' does not match integral_header '" +
+                             std::string(expected_header) + "'");
   cursor.require('[', "missing '[' after integral head");
   const int leading = cursor.integer();
   if (cursor.consume(']')) {
@@ -135,16 +139,18 @@ Integral parse_one(IntegralCursor& cursor, unsigned expected_size)
 
 } // namespace
 
-Integral parse_integral_expression(std::string_view expression, unsigned expected_size)
+Integral parse_integral_expression(std::string_view expression, unsigned expected_size,
+                                   std::string_view expected_header)
 {
   IntegralCursor cursor(expression);
-  Integral result = parse_one(cursor, expected_size);
+  Integral result = parse_one(cursor, expected_size, expected_header);
   if (!cursor.done()) throw std::runtime_error("unexpected text after integral");
   return result;
 }
 
 std::vector<Integral> parse_integrals(const std::filesystem::path& path,
-                                      unsigned expected_size)
+                                      unsigned expected_size,
+                                      std::string_view expected_header)
 {
   std::ifstream input(path);
   if (!input) throw std::runtime_error("cannot open integral file: " + path.string());
@@ -159,7 +165,8 @@ std::vector<Integral> parse_integrals(const std::filesystem::path& path,
     IntegralCursor empty(expression);
     if (empty.done()) continue;
     try {
-      result.push_back(parse_integral_expression(expression, expected_size));
+      result.push_back(
+          parse_integral_expression(expression, expected_size, expected_header));
     } catch (const std::exception& error) {
       throw std::runtime_error(path.string() + ":" + std::to_string(line_number) +
                                ": " + error.what());

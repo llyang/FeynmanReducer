@@ -76,7 +76,7 @@ public:
       names.push_back(name.c_str());
     coefficients_.reserve(requests_.size());
     for (const auto& request : requests_) {
-      if (request.terms.empty())
+      if (request.terms.empty() && !request.output.differential)
         throw std::invalid_argument("reduction request has no terms");
       auto& parsed = coefficients_.emplace_back();
       parsed.reserve(request.terms.size());
