@@ -10,9 +10,9 @@
 
 enum class DSeparationStatus { NotChecked, Passed, Failed, Skipped };
 struct DSeparationReport {
-  // In D-separating mode, Passed covers the source-integral basis-selection
-  // certificate plus exact rechecks of standalone integral outputs. Contracted
-  // named combinations and differential-equation entries are not rechecked.
+  // In D-separating mode, Passed covers basis discovery plus exact validation
+  // of explicitly requested integral outputs. Components used only by named
+  // combinations or differential-equation entries are not validated separately.
   DSeparationStatus status = DSeparationStatus::NotChecked;
   std::size_t failed_coefficients = 0;
   std::string witness;

@@ -4,8 +4,30 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
+
+#include <flint/nmod.h>
+
+namespace {
+std::optional<ulong> evaluate_request_coefficient(
+    const FlintRational& coefficient, std::span<const ulong> coordinates, ulong prime)
+{
+  if (coordinates.size() != coefficient.context()->variable_names().size())
+    throw std::logic_error("request coefficient coordinate mismatch");
+  nmod_t modulus;
+  nmod_init(&modulus, prime);
+  const auto numerator = fmpz_mpoly_evaluate_all_nmod(
+      fmpz_mpoly_q_numref(coefficient.raw()), coordinates.data(),
+      coefficient.context()->raw(), modulus);
+  const auto denominator = fmpz_mpoly_evaluate_all_nmod(
+      fmpz_mpoly_q_denref(coefficient.raw()), coordinates.data(),
+      coefficient.context()->raw(), modulus);
+  if (denominator == 0) return std::nullopt;
+  return nmod_div(numerator, denominator, modulus);
+}
+} // namespace
 
 EvaluatedCoeffs<firefly::FFInt>
 BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values,
@@ -13,6 +35,8 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
                                        const CoefficientSelection* normalization) const
 {
   using T = firefly::FFInt;
+  const auto* expression_selection = selection;
+  const auto* lp_selection = normalization != nullptr ? normalization : selection;
 
   EvaluatedCoeffs<T> res;
   const T d_val = reduction::detail::evaluate_dimension(cfg, values);
@@ -63,11 +87,12 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
           reduction::detail::evaluate_polynomial_coefficient(
               cfg, cfg.extended_lp.polynomial_terms[term], values);
     };
-    if (selection == nullptr) {
+    if (expression_selection == nullptr) {
       for (std::size_t term = 0; term < local_extended_polynomial_values.size(); ++term)
         evaluate_polynomial_factor(term);
     } else {
-      for (const std::uint32_t term : selection->extended_polynomial_factors) {
+      for (const std::uint32_t term :
+           expression_selection->extended_polynomial_factors) {
         if (term >= local_extended_polynomial_values.size())
           throw std::logic_error("selected extended LP factor is out of range");
         evaluate_polynomial_factor(term);
@@ -83,11 +108,11 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
           local_top_lp_products[program.parent] *
           local_extended_polynomial_values[program.polynomial_factor];
     };
-    if (selection == nullptr) {
+    if (expression_selection == nullptr) {
       for (std::size_t node = 0; node < top_lp_product_nodes.size(); ++node)
         evaluate_product_node(node);
     } else {
-      for (const std::uint32_t node : selection->top_lp_product_nodes) {
+      for (const std::uint32_t node : expression_selection->top_lp_product_nodes) {
         if (node >= top_lp_product_nodes.size())
           throw std::logic_error("selected top-LP product node is out of range");
         evaluate_product_node(node);
@@ -100,16 +125,17 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
           static_cast<std::size_t>(top_lp_maximum_falling_degree) + 1);
     }
     local_top_lp_falling_factors[0] = T(1);
-    const std::size_t maximum_falling_degree = selection == nullptr
-                                                   ? top_lp_maximum_falling_degree
-                                                   : selection->maximum_falling_degree;
+    const std::size_t maximum_falling_degree =
+        expression_selection == nullptr
+            ? top_lp_maximum_falling_degree
+            : expression_selection->maximum_falling_degree;
     for (std::size_t degree = 1; degree <= maximum_falling_degree; ++degree) {
       local_top_lp_falling_factors[degree] =
           local_top_lp_falling_factors[degree - 1] * (res.minus_half_d - T(degree - 1));
     }
 
     const auto evaluate_expression = [&](std::uint32_t expression) {
-      if (expression >= top_lp_expression_programs.size())
+      if (expression >= base_top_lp_expression_count)
         throw std::logic_error("top-LP expression program is out of range");
       const auto& program = top_lp_expression_programs[expression];
       T value(0);
@@ -123,18 +149,19 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
       }
       local_top_lp_coefficients[expression] = value;
     };
-    if (selection == nullptr) {
-      for (std::uint32_t expression = 0; expression < top_lp_expression_programs.size();
+    if (expression_selection == nullptr) {
+      for (std::uint32_t expression = 0; expression < base_top_lp_expression_count;
            ++expression) {
         evaluate_expression(expression);
       }
     } else {
-      for (const std::uint32_t expression : selection->top_lp_expressions)
-        evaluate_expression(expression);
+      for (const std::uint32_t expression :
+           expression_selection->top_lp_expressions)
+        if (expression < base_top_lp_expression_count)
+          evaluate_expression(expression);
     }
   }
 
-  if (normalization != nullptr) selection = normalization;
   const auto evaluate_lp_program = [&](const std::size_t program) {
     if (program >= lp_programs.size())
       throw std::logic_error("selected LP normalization program is out of range");
@@ -143,16 +170,16 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
     local_lp_numerators[program] = fraction.numerator;
     local_lp_denominators[program] = fraction.denominator;
   };
-  if (selection == nullptr) {
+  if (lp_selection == nullptr) {
     for (size_t program = 0; program < lp_programs.size(); ++program)
       evaluate_lp_program(program);
   } else {
-    for (const std::size_t program : selection->lp_programs)
+    for (const std::size_t program : lp_selection->lp_programs)
       evaluate_lp_program(program);
   }
 
   const auto& reciprocal_requests =
-      selection == nullptr ? full_lp_reciprocals : selection->lp_reciprocals;
+      lp_selection == nullptr ? full_lp_reciprocals : lp_selection->lp_reciprocals;
   local_reciprocal_values.resize(reciprocal_requests.size());
   local_reciprocal_inverses.resize(reciprocal_requests.size());
   for (std::size_t index = 0; index < reciprocal_requests.size(); ++index) {
@@ -180,7 +207,7 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
     }
   }
 
-  if (selection == nullptr) {
+  if (lp_selection == nullptr) {
     for (std::size_t target = 0; target < cfg.targets.size(); ++target) {
       const std::size_t program = target_lp_program_ids[target];
       local_target_lp[target] =
@@ -192,20 +219,62 @@ BlackBoxFeynman::evaluate_coefficients(const std::vector<firefly::FFInt>& values
           local_lp_denominators[program] * local_basis_numerator_inverses[program];
     }
   } else {
-    for (const std::uint32_t target : selection->targets) {
+    for (const std::uint32_t target : lp_selection->targets) {
       if (target >= target_lp_program_ids.size())
         throw std::logic_error("selected target normalization is out of range");
       const std::size_t program = target_lp_program_ids[target];
       local_target_lp[target] =
           local_lp_numerators[program] * local_target_denominator_inverses[program];
     }
-    for (const std::uint32_t master : selection->basis) {
+    for (const std::uint32_t master : lp_selection->basis) {
       if (master >= basis_lp_program_ids.size())
         throw std::logic_error("selected basis normalization is out of range");
       const std::size_t program = basis_lp_program_ids[master];
       local_basis_lp_inv[master] =
           local_lp_denominators[program] * local_basis_numerator_inverses[program];
     }
+  }
+
+  std::vector<ulong> request_coordinates;
+  request_coordinates.reserve(values.size());
+  for (const auto& value : values)
+    request_coordinates.push_back(value.n);
+  const auto evaluate_request_expression = [&](std::uint32_t expression) {
+    if (expression < base_top_lp_expression_count ||
+        expression >= top_lp_expression_programs.size())
+      throw std::logic_error("request RHS expression is out of range");
+    const auto request_index =
+        static_cast<std::size_t>(expression - base_top_lp_expression_count);
+    if (request_index >= request_expression_programs.size())
+      throw std::logic_error("request RHS program is unavailable");
+    const auto& program = request_expression_programs[request_index];
+    if (program.coefficient >= request_coefficients_.size() ||
+        program.source_target >= local_target_lp.size())
+      throw std::logic_error("request RHS program dependency is out of range");
+    const auto coefficient = evaluate_request_coefficient(
+        request_coefficients_[program.coefficient], request_coordinates,
+        firefly::FFInt::p);
+    if (!coefficient)
+      throw std::runtime_error("reduction request coefficient denominator is zero");
+    T value(*coefficient);
+    value *= local_target_lp[program.source_target];
+    if (program.base_expression != std::numeric_limits<std::uint32_t>::max()) {
+      if (program.base_expression >= base_top_lp_expression_count)
+        throw std::logic_error("request RHS base expression is invalid");
+      value *= local_top_lp_coefficients[program.base_expression];
+    }
+    local_top_lp_coefficients[expression] = value;
+  };
+  if (expression_selection == nullptr) {
+    for (std::uint32_t expression =
+             static_cast<std::uint32_t>(base_top_lp_expression_count);
+         expression < top_lp_expression_programs.size(); ++expression)
+      evaluate_request_expression(expression);
+  } else {
+    for (const std::uint32_t expression :
+         expression_selection->top_lp_expressions)
+      if (expression >= base_top_lp_expression_count)
+        evaluate_request_expression(expression);
   }
 
   res.targets_lp = std::span<const T>(local_target_lp.data(), local_target_lp.size());

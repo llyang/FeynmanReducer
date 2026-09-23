@@ -73,6 +73,7 @@ void BlackBoxFeynman::plan_kernel(
   using T = firefly::FFInt;
   const TopLpTargetPlan* target_plan =
       top_lp_target_plan.columns.empty() ? nullptr : &top_lp_target_plan;
+  const bool projected_targets = target_plan != nullptr && target_plan->projected;
   KernelPlanner planner(cfg, target_plan);
   const auto variable_slots = std::span<const std::uint32_t>(cfg.propagator_slots);
   const auto& polynomial_terms = cfg.polynomial_terms;
@@ -359,7 +360,7 @@ void BlackBoxFeynman::plan_kernel(
         if (value != T(0)) uncovered.insert(row);
     }
     const std::size_t uncovered_rhs_rows = uncovered.size();
-    if (target_plan != nullptr && progress) {
+    if (projected_targets && progress) {
       progress(
           std::format("Top-LP row coverage: uncovered_rhs_rows={}", uncovered_rhs_rows),
           ReductionProgressEvent::info);
@@ -416,7 +417,7 @@ void BlackBoxFeynman::plan_kernel(
     }
     std::vector<std::uint32_t> row_groups;
     std::vector<std::uint32_t> ordered_groups;
-    if (target_plan != nullptr) {
+    if (projected_targets) {
       std::vector<ProjectedSeedGroup> ansatz_group_keys;
       ansatz_group_keys.reserve(ansatz_metadata.size());
       std::set<ProjectedSeedGroup, ProjectedSeedGroupLess> all_group_keys;
@@ -465,21 +466,21 @@ void BlackBoxFeynman::plan_kernel(
     const size_t provisional_ansatz_cols = indexed_ansatz_cols.size();
     const size_t generated_column_count = num_basis_cols + provisional_ansatz_cols;
     const auto effective_dot_ordering = resolve_ansatz_dot_ordering(
-        ansatz_dot_ordering, target_plan != nullptr, expansion_rounds);
+        ansatz_dot_ordering, projected_targets, expansion_rounds);
     switch (effective_dot_ordering) {
     case AnsatzDotOrdering::Auto:
       throw std::logic_error("automatic ansatz dot ordering was not resolved");
     case AnsatzDotOrdering::Markowitz:
       kernel_statistics_.compact_policy =
-          target_plan == nullptr ? "sector-markowitz" : "g-layer-sector-markowitz";
+          !projected_targets ? "sector-markowitz" : "g-layer-sector-markowitz";
       break;
     case AnsatzDotOrdering::LowFirst:
-      kernel_statistics_.compact_policy = target_plan == nullptr
+      kernel_statistics_.compact_policy = !projected_targets
                                               ? "sector-low-dot-markowitz"
                                               : "g-layer-sector-low-dot-markowitz";
       break;
     case AnsatzDotOrdering::HighFirst:
-      kernel_statistics_.compact_policy = target_plan == nullptr
+      kernel_statistics_.compact_policy = !projected_targets
                                               ? "sector-high-dot-markowitz"
                                               : "g-layer-sector-high-dot-markowitz";
       break;
@@ -523,7 +524,7 @@ void BlackBoxFeynman::plan_kernel(
             {std::min(residual_key.g_shift, deepest_seed_shift), residual_key.sector});
         // Both q and q-1 seeds can supply rows at q. The latter must remain
         // eligible after intermediate layers have been activated as well.
-        if (target_plan != nullptr && residual_key.g_shift != 0 &&
+        if (projected_targets && residual_key.g_shift != 0 &&
             residual_key.g_shift - 1 <= deepest_seed_shift) {
           requested_groups.insert({residual_key.g_shift - 1, residual_key.sector});
         }
@@ -532,7 +533,7 @@ void BlackBoxFeynman::plan_kernel(
       const std::size_t previous_points = envelope_grid.size();
       const std::vector requested(requested_groups.begin(), requested_groups.end());
       reduction::detail::ProjectedSeedExpansion expansion;
-      if (target_plan != nullptr) {
+      if (projected_targets) {
         const std::vector residuals(residual_groups.begin(), residual_groups.end());
         expansion = reduction::detail::activate_projected_seed_groups(
             envelope_grid, residuals, *target_plan, planner.equations, planner.sectors,

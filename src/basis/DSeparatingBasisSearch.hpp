@@ -58,8 +58,8 @@ struct BasisIntegralPool {
 
 // Builds the deterministic target set used exclusively for D-separating basis
 // discovery: all symmetry-inequivalent d-dimensional top-sector integrals with
-// both dots on one propagator (exactly one index equal to three). User-requested
-// source integrals are validated only after a basis has been selected.
+// both dots on one propagator (exactly one index equal to three). Explicit
+// integral outputs are validated only after a basis has been selected.
 [[nodiscard]] std::vector<Integral>
 build_d_separating_search_targets(const TopologyConfig& topology);
 

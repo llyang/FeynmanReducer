@@ -66,13 +66,13 @@ void check_d_separation(ReductionResult& result, BasisSelectionPolicy policy,
     if (policy == BasisSelectionPolicy::DSeparating) {
       result.d_separation.status = DSeparationStatus::Passed;
       if (progress)
-        progress("D-separation source-integral validation passed during basis "
-                 "selection; no standalone integral outputs to recheck",
+        progress("D-separating basis search passed; no explicit integral outputs "
+                 "to validate",
                  ReductionProgressEvent::info);
     } else {
       result.d_separation.status = DSeparationStatus::Skipped;
       if (progress)
-        progress("D-separation check skipped: no standalone integral outputs",
+        progress("D-separation check skipped: no explicit integral outputs",
                  ReductionProgressEvent::info);
     }
     return;
@@ -88,9 +88,8 @@ void check_d_separation(ReductionResult& result, BasisSelectionPolicy policy,
     result.d_separation.status = DSeparationStatus::Passed;
     if (progress) {
       progress(policy == BasisSelectionPolicy::DSeparating
-                   ? "D-separation check passed for standalone integral outputs; "
-                     "source integrals were validated during basis selection"
-                   : "D-separation check passed for standalone integral outputs "
+                   ? "D-separation check passed for explicit integral outputs"
+                   : "D-separation check passed for explicit integral outputs "
                      "and configured numerics",
                ReductionProgressEvent::info);
     }

@@ -24,6 +24,22 @@ void BlackBoxFeynman::complete_coefficient_selection(
   sort_unique(selection.targets);
   sort_unique(selection.basis);
 
+  const std::size_t selected_expression_count = selection.top_lp_expressions.size();
+  for (std::size_t index = 0; index < selected_expression_count; ++index) {
+    const std::uint32_t expression = selection.top_lp_expressions[index];
+    if (expression < base_top_lp_expression_count) continue;
+    const auto request =
+        static_cast<std::size_t>(expression - base_top_lp_expression_count);
+    if (request >= request_expression_programs.size())
+      throw std::logic_error("selected request RHS expression is out of range");
+    const auto& program = request_expression_programs[request];
+    selection.targets.push_back(program.source_target);
+    if (program.base_expression != std::numeric_limits<std::uint32_t>::max())
+      selection.top_lp_expressions.push_back(program.base_expression);
+  }
+  sort_unique(selection.top_lp_expressions);
+  sort_unique(selection.targets);
+
   selection.lp_programs.clear();
   selection.lp_reciprocals.clear();
   selection.top_lp_product_nodes.clear();
@@ -67,6 +83,7 @@ void BlackBoxFeynman::complete_coefficient_selection(
   for (const std::uint32_t expression : selection.top_lp_expressions) {
     if (expression >= top_lp_expression_programs.size())
       throw std::logic_error("selected top-LP expression is out of range");
+    if (expression >= base_top_lp_expression_count) continue;
     const auto& program = top_lp_expression_programs[expression];
     const std::size_t end =
         static_cast<std::size_t>(program.term_begin) + program.term_count;
@@ -153,7 +170,8 @@ BlackBoxFeynman::build_replay_variant(std::span<const std::uint32_t> active_outp
       variant->coefficients.targets.clear();
       variant->coefficients.basis.clear();
       for (const auto& output : variant->outputs) {
-        variant->coefficients.targets.push_back(output.target);
+        if (!contracted_request_rhs_)
+          variant->coefficients.targets.push_back(output.target);
         variant->coefficients.basis.push_back(output.basis);
       }
       complete_coefficient_selection(variant->coefficients);
@@ -399,7 +417,8 @@ BlackBoxFeynman::build_replay_variant(std::span<const std::uint32_t> active_outp
     selected.rhs_clear_runs = merge_clear_runs(std::move(output_rhs_clear_runs));
     selected.target_clear_runs = merge_clear_runs(std::move(target_clear_runs));
     for (const auto& output : variant->outputs) {
-      variant->coefficients.targets.push_back(output.target);
+      if (!contracted_request_rhs_)
+        variant->coefficients.targets.push_back(output.target);
       variant->coefficients.basis.push_back(output.basis);
     }
     complete_coefficient_selection(variant->coefficients);
@@ -691,6 +710,8 @@ BlackBoxFeynman::build_replay_variant(std::span<const std::uint32_t> active_outp
 
   for (const auto& instruction : variant->pooled_loader_B)
     variant->coefficients.pooled_expressions.push_back(instruction.expression);
+  for (const auto& instruction : variant->top_lp_loader_B)
+    variant->coefficients.top_lp_expressions.push_back(instruction.expression);
   for (const auto& block : variant->blocks) {
     for (const auto& instruction : block.pooled_loader_M)
       variant->coefficients.pooled_expressions.push_back(instruction.expression);
@@ -702,7 +723,8 @@ BlackBoxFeynman::build_replay_variant(std::span<const std::uint32_t> active_outp
       variant->coefficients.top_lp_expressions.push_back(instruction.expression);
   }
   for (const auto& output : variant->outputs) {
-    variant->coefficients.targets.push_back(output.target);
+    if (!contracted_request_rhs_)
+      variant->coefficients.targets.push_back(output.target);
     variant->coefficients.basis.push_back(output.basis);
   }
   complete_coefficient_selection(variant->coefficients);
@@ -717,6 +739,12 @@ bool BlackBoxFeynman::retain_outputs(std::span<const std::uint32_t> active_outpu
       std::ranges::adjacent_find(active_outputs) != active_outputs.end() ||
       (!active_outputs.empty() && active_outputs.back() >= replay_outputs.size()))
     throw std::invalid_argument("retained outputs must be sorted, unique and in range");
+  if (contracted_request_rhs_) {
+    if (progress)
+      progress("Shared kernel trim: skipped native request RHS",
+               ReductionProgressEvent::info);
+    return false;
+  }
   if (replay_orientation == ReplayOrientation::Master) {
     if (progress)
       progress("Shared kernel trim: skipped master orientation",
@@ -878,16 +906,16 @@ BlackBoxFeynman::eval_grouped_outputs(const std::vector<firefly::FFInt>& values,
                                       std::span<const std::uint32_t> active_outputs,
                                       bool by_master)
 {
-  std::vector<std::uint8_t> groups(by_master ? cfg.basis.size() : cfg.targets.size(),
+  std::vector<std::uint8_t> groups(by_master ? cfg.basis.size() : requests_.size(),
                                    0);
   CoefficientSelection normalization;
   for (const auto output : active_outputs) {
     const auto& descriptor = replay_outputs[output];
     groups[by_master ? descriptor.basis : descriptor.target] = 1;
-    normalization.targets.push_back(descriptor.target);
+    if (!contracted_request_rhs_)
+      normalization.targets.push_back(descriptor.target);
     normalization.basis.push_back(descriptor.basis);
   }
-  complete_coefficient_selection(normalization);
   std::vector<std::uint32_t> grouped;
   grouped.reserve(replay_outputs.size());
   for (std::size_t output = 0; output < replay_outputs.size(); ++output)
@@ -914,6 +942,9 @@ BlackBoxFeynman::eval_grouped_outputs(const std::vector<firefly::FFInt>& values,
     }
   }
   const auto* coefficients = variant ? &variant->coefficients : &replay_coefficients;
+  if (contracted_request_rhs_)
+    normalization.targets = coefficients->targets;
+  complete_coefficient_selection(normalization);
   const auto evaluated = evaluate_coefficients(values, coefficients, &normalization);
   return execute_replay(evaluated, values, variant.get(), &requested, &normalization);
 }

@@ -3,6 +3,7 @@
 #include "reduction/detail/ReductionStage.hpp"
 
 #include "basis/DSeparatingReduction.hpp"
+#include "core/IntegralFormatting.hpp"
 #include "masters/detail/GlobalBasisSelector.hpp"
 #include "reduction/BlackBoxFeynman.hpp"
 #include "reduction/ConstantRationalReconstruction.hpp"
@@ -10,7 +11,7 @@
 #include "reduction/DifferentialEquations.hpp"
 #include "reduction/FireflyResultImport.hpp"
 #include "reduction/ParameterEvaluation.hpp"
-#include "reduction/RequestedOutputBlackBox.hpp"
+#include "reduction/ReductionRequests.hpp"
 #include "reduction/ScaleReconstruction.hpp"
 
 #include <firefly/Reconstructor.hpp>
@@ -38,9 +39,7 @@ ReductionResult reconstruct_prepared(Config& config,
   if (config.threads == 0) {
     throw std::runtime_error("thread count must be positive");
   }
-  using Requested = reduction::detail::RequestedOutputBlackBox<BlackBox>;
-  auto requested_black_box =
-      std::make_unique<Requested>(config, std::move(native_black_box));
+  auto requested_black_box = std::move(native_black_box);
   if (progress && !config.reduction_requests.empty())
     progress(std::format("Requested outputs: source_targets={}, requests={}, "
                          "reconstructed_candidates={}",
@@ -71,7 +70,7 @@ ReductionResult reconstruct_prepared(Config& config,
     if (config.reconstruction_scale_candidates.size() > 1) {
       degrees = run_reduction_stage(progress, "Select reconstruction scale", [&] {
         firefly::RatReconst::reset();
-        firefly::Reconstructor<Requested> scanner(
+        firefly::Reconstructor<BlackBox> scanner(
             static_cast<unsigned>(config.parameters.size()), config.threads,
             maximum_bunch_size, *requested_black_box);
         scanner.enable_factor_scan();
@@ -112,7 +111,7 @@ ReductionResult reconstruct_prepared(Config& config,
     reconstruction_parameters.erase(reconstruction_parameters.begin() +
                                     static_cast<std::ptrdiff_t>(*scale));
   }
-  using Adapter = reduction::detail::ScaleBlackBox<Requested>;
+  using Adapter = reduction::detail::ScaleBlackBox<BlackBox>;
   auto black_box = std::make_unique<Adapter>(std::move(requested_black_box), scale);
   auto context = std::make_shared<FlintRationalContext>(config.parameters);
   auto reconstruction_context =
@@ -192,7 +191,8 @@ ReductionResult reconstruct_prepared(Config& config,
         result.targets = config.targets;
         if (config.differential_equations)
           result.differential_parameters = config.kinematic_parameters;
-        for (const auto& request : black_box->native->requests())
+        for (const auto& request :
+             reduction::detail::resolved_reduction_requests(config))
           result.outputs.push_back(request.output);
         result.context = context;
         result.coefficients.reserve(full_output_count);
@@ -273,6 +273,100 @@ ReductionResult perform_reduction_impl(Config& config,
     if (config.basis.empty())
       throw std::runtime_error(
           "D-separating basis selection requires an initial master basis");
+
+    // Contracted requests must participate in compact support selection as native
+    // RHS columns.  The historical shared-oracle adapter exposes integral rows,
+    // so use the direct selected-basis path whenever requests are explicit or DE
+    // rows still have to be generated.
+    if (!config.reduction_requests.empty() || config.differential_equations) {
+      basis::DSeparatingBasisSearchOptions search_options;
+      search_options.strategy = options.d_separating_search;
+      auto search = run_reduction_stage(
+          progress, "Prepare shared D-separating reduction", [&] {
+            return basis::prepare_d_separating_basis_search(
+                config, config.basis, relation_source_sectors, search_options,
+                [&](std::string_view message) {
+                  if (progress)
+                    progress(std::format("D-separating search: {}", message),
+                             ReductionProgressEvent::info);
+                },
+                options);
+          });
+      if (search.report.status != basis::DSeparatingBasisSearchStatus::Passed) {
+        throw std::runtime_error(std::format(
+            "D-separating basis selection failed: {}", search.report.message));
+      }
+      auto selected_basis = search.report.selected_basis;
+      search.oracle.reset();
+
+      Config final_config = config;
+      final_config.basis = selected_basis;
+      if (final_config.differential_equations)
+        reduction::detail::materialize_differential_equations(final_config);
+
+      Config validation_config = final_config;
+      validation_config.targets.clear();
+      validation_config.reduction_requests.clear();
+      validation_config.differential_equations = false;
+      for (const auto& request :
+           reduction::detail::resolved_reduction_requests(final_config)) {
+        if (!request.output.named && !request.output.differential)
+          validation_config.targets.push_back(request.output.integral);
+      }
+      if (!validation_config.targets.empty()) {
+        auto validation = basis::prepare_d_separating_fixed_basis_validation(
+            std::move(validation_config), selected_basis, relation_source_sectors,
+            search_options,
+            [&](std::string_view message) {
+              if (progress)
+                progress(std::format("D-separating validation: {}", message),
+                         ReductionProgressEvent::info);
+            },
+            options);
+        if (validation.report.status !=
+            basis::DSeparatingBasisSearchStatus::Passed) {
+          std::string detail = validation.report.message;
+          if (const auto& witness = validation.report.primary_witness) {
+            detail += std::format("; target={}, component={}, sector={}, "
+                                  "mixed_degree={}",
+                                  format_mathematica_integral(
+                                      final_config.integral_header, witness->target),
+                                  witness->component, witness->sector,
+                                  witness->mixed_degree);
+          }
+          throw std::runtime_error(std::format(
+              "D-separating fixed-basis validation failed: {}", detail));
+        }
+        if (progress)
+          progress(std::format("D-separating fixed validation: targets={}, probes={}, "
+                               "elapsed_ms={:.2f}",
+                               validation.report.validation_targets.size(),
+                               validation.report.probe_statistics.selected_replay_calls,
+                               validation.report.timing.total_seconds * 1000.0),
+                   ReductionProgressEvent::info);
+      } else if (progress) {
+        progress("D-separating fixed validation: targets=0, skipped (no explicit "
+                 "integral targets)",
+                 ReductionProgressEvent::info);
+      }
+
+      config = std::move(final_config);
+      auto final_kernel = run_reduction_stage(
+          progress, "Prepare final D-separating reduction kernel", [&] {
+            return BlackBoxFeynman::prepare(config, relation_source_sectors, progress,
+                                            options);
+          });
+      if (options.d_separating_replay != TargetReplayPolicy::Exact) {
+        const bool enabled =
+            final_kernel->configure_target_replay(options.d_separating_replay);
+        if (progress)
+          progress(enabled ? "Final replay: target-row reuse with cache enabled"
+                           : "Final replay: target-row reuse skipped (master orientation)",
+                   ReductionProgressEvent::info);
+      }
+      return reduction::detail::reconstruct_prepared_kernel(
+          config, std::move(final_kernel), std::move(progress));
+    }
     auto black_box =
         run_reduction_stage(progress, "Prepare shared D-separating reduction", [&] {
           return basis::DSeparatingReduction::prepare(

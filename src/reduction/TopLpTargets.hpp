@@ -26,6 +26,7 @@ struct TopLpTargetPlan {
   std::vector<std::vector<Monomial>> columns;
   std::vector<TopLpCoefficientExpression> expressions;
   unsigned maximum_g_shift = 0;
+  bool projected = false;
 };
 
 /// Compiles exact boundary projections for negative-index and dimension-shifted

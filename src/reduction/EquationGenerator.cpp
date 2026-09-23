@@ -71,7 +71,9 @@ std::vector<AnsatzSeedLayer> EquationGenerator::build_ansatz_seed_layers(
     std::span<const Integral> additional_anchors) const
 {
   const unsigned layer_count =
-      target_plan == nullptr ? 1U : std::max(2U, target_plan->maximum_g_shift);
+      target_plan == nullptr || !target_plan->projected
+          ? 1U
+          : std::max(2U, target_plan->maximum_g_shift);
   std::vector<AnsatzSeedLayer> layers(layer_count);
   for (unsigned g_shift = 0; g_shift < layer_count; ++g_shift) {
     layers[g_shift].g_shift = g_shift;
@@ -79,7 +81,7 @@ std::vector<AnsatzSeedLayer> EquationGenerator::build_ansatz_seed_layers(
 
   append_integral_anchors(layers.front().anchors, cfg.basis);
   append_integral_anchors(layers.front().anchors, additional_anchors);
-  if (target_plan == nullptr) {
+  if (target_plan == nullptr || !target_plan->projected) {
     append_integral_anchors(layers.front().anchors, cfg.targets);
     return layers;
   }
@@ -357,7 +359,7 @@ void EquationGenerator::append_integral_anchors(
 std::vector<std::vector<int>> EquationGenerator::build_initial_ansatz_domain(
     std::span<const Integral> additional_anchors) const
 {
-  if (target_plan != nullptr) {
+  if (target_plan != nullptr && target_plan->projected) {
     throw std::logic_error(
         "single-layer ansatz domain requested with a multi-layer target plan");
   }

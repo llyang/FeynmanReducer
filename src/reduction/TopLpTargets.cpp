@@ -140,6 +140,7 @@ TopLpTargetPlan compile_top_lp_target_plan(const Config& config)
                std::ranges::any_of(target.indices, [](int index) { return index < 0; });
       });
   if (!has_projected_target) return result;
+  result.projected = true;
   if (config.extended_lp.polynomial_terms.empty())
     throw std::invalid_argument("projected target has no extended LP polynomial");
 

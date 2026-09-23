@@ -371,16 +371,18 @@ BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
   if (variant == nullptr &&
       replay_outputs.size() != reconstructed_output_positions.size())
     throw std::logic_error("replay result slot shape is inconsistent");
-  if (target_lp_values.size() < cfg.targets.size())
+  if (!contracted_request_rhs_ && target_lp_values.size() < cfg.targets.size())
     target_lp_values.resize(cfg.targets.size());
   if (basis_lp_inverse_values.size() < cfg.basis.size())
     basis_lp_inverse_values.resize(cfg.basis.size());
   const auto& output_normalization =
       normalization == nullptr ? coefficient_selection : *normalization;
-  for (const std::uint32_t target : output_normalization.targets) {
-    if (target >= coeffs.targets_lp.size())
-      throw std::logic_error("replay target normalization is out of range");
-    target_lp_values[target] = arithmetic.encode(coeffs.targets_lp[target].n);
+  if (!contracted_request_rhs_) {
+    for (const std::uint32_t target : output_normalization.targets) {
+      if (target >= coeffs.targets_lp.size())
+        throw std::logic_error("replay target normalization is out of range");
+      target_lp_values[target] = arithmetic.encode(coeffs.targets_lp[target].n);
+    }
   }
   for (const std::uint32_t basis : output_normalization.basis) {
     if (basis >= coeffs.basis_lp_inv.size())
@@ -401,7 +403,8 @@ BlackBoxFeynman::execute_replay(const EvaluatedCoeffs<firefly::FFInt>& coeffs,
     } else {
       value = right_hand_side[output.rhs_slot];
     }
-    value = arithmetic.multiply(value, target_lp_values[output.target]);
+    if (!contracted_request_rhs_)
+      value = arithmetic.multiply(value, target_lp_values[output.target]);
     value = arithmetic.multiply(value, basis_lp_inverse_values[output.basis]);
     value = arithmetic.decode(value);
     results.emplace_back(value);

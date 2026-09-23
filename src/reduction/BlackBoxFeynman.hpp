@@ -21,6 +21,7 @@
 
 #include "core/AtomicSharedPtr.hpp"
 #include "core/Config.hpp"
+#include "core/FlintRational.hpp"
 #include "core/MasterCandidates.hpp"
 #include "reduction/CompiledReplay.hpp"
 #include "reduction/KernelPlanning.hpp"
@@ -515,6 +516,17 @@ class BlackBoxFeynman : public firefly::BlackBoxBase<BlackBoxFeynman> {
   std::vector<TopLpProductNode> top_lp_product_nodes;
   std::vector<TopLpExpressionTerm> top_lp_expression_terms;
   std::vector<TopLpExpressionProgram> top_lp_expression_programs;
+  struct RequestExpressionProgram {
+    std::uint32_t coefficient;
+    std::uint32_t source_target;
+    std::uint32_t base_expression;
+  };
+  std::size_t base_top_lp_expression_count = 0;
+  std::vector<RequestExpressionProgram> request_expression_programs;
+  std::vector<ReductionRequest> requests_;
+  bool contracted_request_rhs_ = false;
+  std::shared_ptr<const FlintRationalContext> request_coefficient_context_;
+  std::vector<FlintRational> request_coefficients_;
   std::uint16_t top_lp_maximum_falling_degree = 0;
 
   struct LpProgram {
@@ -723,7 +735,12 @@ public:
 
   [[nodiscard]] std::size_t total_output_count() const noexcept
   {
-    return cfg.targets.size() * cfg.basis.size();
+    return requests_.size() * cfg.basis.size();
+  }
+
+  [[nodiscard]] const std::vector<ReductionRequest>& requests() const noexcept
+  {
+    return requests_;
   }
 
   // Configure target replay only on a quiescent, prepared kernel.

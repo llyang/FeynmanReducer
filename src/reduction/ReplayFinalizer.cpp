@@ -21,7 +21,7 @@ void BlackBoxFeynman::finalize_replay(const ReductionProgressCallback& progress)
   if (!replay_blocks.empty() || coefficient_pool_initialized)
     throw std::logic_error("block replay is already finalized");
 
-  const std::size_t num_targets = cfg.targets.size();
+  const std::size_t num_targets = requests_.size();
   const std::size_t num_basis = cfg.basis.size();
   auto pending = std::move(pending_block_replay);
   auto& programs = pending->programs;
@@ -821,7 +821,8 @@ void BlackBoxFeynman::finalize_replay(const ReductionProgressCallback& progress)
         replay_coefficients.top_lp_expressions.push_back(instruction.expression);
     }
     for (const auto& output : replay_outputs) {
-      replay_coefficients.targets.push_back(output.target);
+      if (!contracted_request_rhs_)
+        replay_coefficients.targets.push_back(output.target);
       replay_coefficients.basis.push_back(output.basis);
     }
     complete_coefficient_selection(replay_coefficients);
@@ -1195,7 +1196,8 @@ void BlackBoxFeynman::finalize_replay(const ReductionProgressCallback& progress)
       replay_coefficients.top_lp_expressions.push_back(instruction.expression);
   }
   for (const auto& output : replay_outputs) {
-    replay_coefficients.targets.push_back(output.target);
+    if (!contracted_request_rhs_)
+      replay_coefficients.targets.push_back(output.target);
     replay_coefficients.basis.push_back(output.basis);
   }
   complete_coefficient_selection(replay_coefficients);

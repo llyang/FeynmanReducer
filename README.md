@@ -72,7 +72,7 @@ combinations:
       - {coefficient: "1", integral: "F[1,1]"}
 ```
 
-Each `integral` must be a scalar headed expression in the same form as a text target. Component integrals share one reduction kernel, while FireFly reconstructs the contracted named outputs. Symbolic combination terms must have a common scale degree. With `d-separating` selection, every component integral is validated; the contracted named coefficients are not themselves required to remain D-separating. `reduction_validate` currently supports integral-only target files and rejects configurations containing combination YAML explicitly.
+Each `integral` must be a scalar headed expression in the same form as a text target. A combination is compiled into one native right-hand-side column before compact support selection and solving; a component used only by combinations is therefore not solved as a separate output. FireFly reconstructs only the requested named outputs. Symbolic combination terms must have a common scale degree. With `d-separating` selection, fixed-basis validation is applied only to integral outputs explicitly listed as targets; combination-only components and contracted named coefficients are not checked separately. `reduction_validate` currently supports integral-only target files and rejects configurations containing combination YAML explicitly.
 
 Targets may also carry an even additive dimension shift:
 
@@ -106,10 +106,10 @@ the run is DE-only and does not implicitly read `targets.txt`. Both `default`
 and `d-separating` basis selection are supported. D-separating discovery always
 uses all symmetry-inequivalent top-sector integrals with both dots on one
 propagator, i.e. exactly one index equal to three; user targets do not participate
-in the search. After selection, ordinary and shifted
-targets, every nonzero combination component, and derivative source integrals for
-the selected basis are checked against that fixed basis. A failure terminates the
-run without another search. D-separating constrains those source integrals, not the
+in the search. After selection, only ordinary and shifted integrals explicitly
+requested as outputs are checked against that fixed basis. Combination-only and
+derivative source integrals remain native RHS terms and are not validated as
+standalone targets. A failure terminates the run without another search. D-separating constrains the explicit integral outputs, not the
 contracted entries of the resulting connection matrices.
 
 Three focused examples under `examples/` exercise these interfaces directly:
@@ -132,7 +132,7 @@ outputs/reduction_YYMMDDHHMMSS.log
 outputs/firefly.log                 # only when FireFly emits a raw log
 ```
 
-Coefficients retain polynomial factors and powers. After reconstruction, standalone integral outputs with mixed D/kinematic denominator factors produce a warning with default basis selection and an error with explicit `d-separating`; named combinations and differential-equation entries are excluded because their source integrals are the validation unit. With explicit `d-separating`, source-only runs are covered by the basis-selection certificate. With default selection and no standalone integral outputs, this diagnostic is skipped. The check is also skipped when D is fixed.
+Coefficients retain polynomial factors and powers. After reconstruction, explicit integral outputs with mixed D/kinematic denominator factors produce a warning with default basis selection and an error with explicit `d-separating`; named combinations and differential-equation entries are excluded. With explicit `d-separating`, combination/DE-only runs report the successful basis-search certificate without separate component validation. With default selection and no explicit integral outputs, this diagnostic is skipped. The check is also skipped when D is fixed.
 
 `differential_equations.m` is a Mathematica replacement list from each free
 kinematic parameter to its connection matrix, for example

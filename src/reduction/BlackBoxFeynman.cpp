@@ -7,7 +7,10 @@
 #include "reduction/KernelErrors.hpp"
 #include "reduction/MasterIndependence.hpp"
 #include "reduction/ParameterEvaluation.hpp"
+#include "reduction/ReductionRequests.hpp"
+#include "reduction/EquationGenerator.hpp"
 #include "topology/IntegralLayout.hpp"
+#include "topology/SectorUtils.hpp"
 
 #include <algorithm>
 #include <array>
@@ -208,6 +211,7 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
   }
   kernel_statistics_.maximum_g_shift = top_lp_target_plan.maximum_g_shift;
   kernel_statistics_.top_lp_target_expressions = top_lp_expression_programs.size();
+  base_top_lp_expression_count = top_lp_expression_programs.size();
   std::vector<TopLpCoefficientExpression>().swap(top_lp_target_plan.expressions);
   for (const auto& target : cfg.targets) {
     for (const int index : target.indices) {
@@ -268,6 +272,81 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
   };
   target_lp_program_ids = compile_lp_programs(cfg.targets);
   basis_lp_program_ids = compile_lp_programs(cfg.basis);
+
+  requests_ = reduction::detail::resolved_reduction_requests(cfg);
+  if (requests_.empty())
+    throw std::invalid_argument("reduction request batch must not be empty");
+  contracted_request_rhs_ = !cfg.reduction_requests.empty();
+  if (contracted_request_rhs_) {
+    request_coefficient_context_ =
+        std::make_shared<FlintRationalContext>(cfg.parameters);
+    std::vector<const char*> request_parameter_names;
+    request_parameter_names.reserve(cfg.parameters.size());
+    for (const auto& name : cfg.parameters)
+      request_parameter_names.push_back(name.c_str());
+
+    std::vector<std::vector<Monomial>> source_columns;
+    if (top_lp_target_plan.projected) {
+      source_columns = top_lp_target_plan.columns;
+    } else {
+      SectorUtils sectors(cfg, cfg.propagator_slots);
+      EquationGenerator equations(cfg, sectors);
+      source_columns = equations.build_target_columns();
+    }
+    if (source_columns.size() != cfg.targets.size())
+      throw std::logic_error("source integral column shape is inconsistent");
+
+    std::vector<std::vector<Monomial>> request_columns;
+    request_columns.reserve(requests_.size());
+    for (const auto& request : requests_) {
+      std::vector<Monomial> request_column;
+      for (const auto& term : request.terms) {
+        if (term.target >= source_columns.size())
+          throw std::out_of_range("reduction request target is out of range");
+        if (request_coefficients_.size() >=
+            std::numeric_limits<std::uint32_t>::max()) {
+          throw std::overflow_error(
+              "reduction request coefficients exceed 32-bit ids");
+        }
+        FlintRational coefficient(request_coefficient_context_);
+        if (fmpz_mpoly_q_set_str_pretty(
+                coefficient.raw(), term.coefficient.c_str(),
+                request_parameter_names.data(),
+                const_cast<fmpz_mpoly_ctx_struct*>(
+                    request_coefficient_context_->raw())) != 0) {
+          throw std::runtime_error(
+              "cannot parse compiled reduction coefficient: " + term.coefficient);
+        }
+        coefficient.canonicalise();
+        const auto coefficient_id =
+            static_cast<std::uint32_t>(request_coefficients_.size());
+        request_coefficients_.push_back(std::move(coefficient));
+        for (const auto& source : source_columns[term.target]) {
+          if (source.coeff_int != 1 || source.coeff_minus_half_d != 0 ||
+              source.with_polynomial_coefficient) {
+            throw std::logic_error(
+                "source target coefficient cannot be contracted as a request RHS");
+          }
+          if (top_lp_expression_programs.size() >=
+              std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error("request RHS expressions exceed 32-bit ids");
+          }
+          const auto expression =
+              static_cast<std::uint32_t>(top_lp_expression_programs.size());
+          request_expression_programs.push_back(
+              {coefficient_id, term.target, source.coefficient_expression});
+          top_lp_expression_programs.push_back({0, 0});
+          auto contracted = source;
+          contracted.coefficient_expression = expression;
+          request_column.push_back(std::move(contracted));
+        }
+      }
+      request_columns.push_back(std::move(request_column));
+    }
+    top_lp_target_plan.columns = std::move(request_columns);
+    kernel_statistics_.top_lp_target_expressions =
+        top_lp_expression_programs.size();
+  }
   for (const auto& program : lp_programs) {
     if (program.delta > 0) {
       maximum_positive_lp_delta =
@@ -504,7 +583,7 @@ std::unique_ptr<BlackBoxFeynman> BlackBoxFeynman::prepare_impl(
 
     bool selection_invalid = false;
     std::vector<std::uint8_t> nonzero_outputs(
-        config.targets.size() * config.basis.size(), 0);
+        candidate->requests_.size() * config.basis.size(), 0);
     std::vector<ValidationSample> validation_samples;
     validation_samples.reserve(2 * kValidationPointsPerPrime);
     auto evaluate_validation_reference = [&](std::uint64_t point,
@@ -719,7 +798,7 @@ BlackBoxFeynman::evaluate_reference(const EvaluatedCoeffs<firefly::FFInt>& coeff
   }
   const auto& plan = *reference_evaluation_plan;
   const std::size_t dimension = plan.dimension;
-  const std::size_t target_count = cfg.targets.size();
+  const std::size_t target_count = requests_.size();
   const std::size_t parameter_count =
       reduction::detail::coefficient_parameter_count(cfg);
   std::vector<T> bilinear_basis(2 * parameter_count);
@@ -936,7 +1015,7 @@ BlackBoxFeynman::evaluate_reference(const EvaluatedCoeffs<firefly::FFInt>& coeff
   for (std::size_t target = 0; target < target_count; ++target) {
     for (std::size_t basis = 0; basis < cfg.basis.size(); ++basis) {
       T value = solution[basis * target_count + target];
-      value = value * coeffs.targets_lp[target];
+      if (!contracted_request_rhs_) value = value * coeffs.targets_lp[target];
       value = value * coeffs.basis_lp_inv[basis];
       result.push_back(value);
     }

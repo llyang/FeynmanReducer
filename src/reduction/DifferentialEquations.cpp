@@ -1,6 +1,6 @@
 #include "reduction/DifferentialEquations.hpp"
 
-#include "reduction/RequestedOutputBlackBox.hpp"
+#include "reduction/ReductionRequests.hpp"
 #include "topology/IntegralLayout.hpp"
 
 #include <gmpxx.h>
