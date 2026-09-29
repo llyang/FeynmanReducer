@@ -51,7 +51,7 @@ ProjectedSeedExpansion activate_projected_seed_groups(
   for (const auto& key : residual_groups)
     if (key.g_shift > 1 && key.g_shift - 1 <= maximum_shift)
       requested.insert({key.g_shift - 1, key.sector});
-  std::map<unsigned, std::vector<std::vector<int>>> inherited_targets;
+  std::map<unsigned, std::vector<std::vector<int>>> inherited_integrals;
   ProjectedSeedExpansion result;
   for (const auto& key : requested) {
     if (key.g_shift == 0 || key.g_shift > maximum_shift || existing.contains(key))
@@ -65,17 +65,21 @@ ProjectedSeedExpansion activate_projected_seed_groups(
       if ((seed_sector & ~key.sector) == 0)
         layer.anchors.emplace_back(seed.begin() + 1, seed.end());
     }
-    auto [target_domain, inserted] = inherited_targets.try_emplace(key.g_shift);
+    auto [target_domain, inserted] = inherited_integrals.try_emplace(key.g_shift);
     if (inserted) {
       AnsatzSeedLayer target_layer{key.g_shift, {}};
-      for (const auto& column : targets.columns) {
-        for (const auto& term : column) {
-          const unsigned shift = projected_g_shift(term.powers);
-          if (shift == key.g_shift || shift == key.g_shift + 1)
-            target_layer.anchors.emplace_back(term.powers.begin() + 1,
-                                              term.powers.end());
+      const auto append_columns = [&](const auto& columns) {
+        for (const auto& column : columns) {
+          for (const auto& term : column) {
+            const unsigned shift = projected_g_shift(term.powers);
+            if (shift == key.g_shift || shift == key.g_shift + 1)
+              target_layer.anchors.emplace_back(term.powers.begin() + 1,
+                                                term.powers.end());
+          }
         }
-      }
+      };
+      append_columns(targets.basis_columns);
+      append_columns(targets.columns);
       // Inherit before symmetry transport: canonical masks need not preserve
       // inclusion. Generate each target layer at most once per activation pass.
       target_domain->second = equations.build_initial_ansatz_domain(target_layer);

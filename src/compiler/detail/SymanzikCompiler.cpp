@@ -20,6 +20,7 @@
 #include <numeric>
 #include <ranges>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -420,7 +421,8 @@ compile_yaml_numerics_node(const YAML::Node& root)
   return result;
 }
 
-TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
+TopologyConfig compile_yaml_topology_node(const YAML::Node& root,
+                                          std::string* research_parametric_input)
 {
   const YAML::Node kinematics = root["kinematics"];
   if (!kinematics || !kinematics.IsMap()) {
@@ -593,6 +595,65 @@ TopologyConfig compile_yaml_topology_node(const YAML::Node& root)
   for (const auto& name : loop_names)
     loop_indices.push_back(symbols.index(name));
   validate_integral_form_basis(integral_forms, loop_indices, independent_indices);
+  // Capture only for the experimental exporter, from the exact parsed forms.
+  // Momentum products are explicit scalar products, never Mathematica Times.
+  if (research_parametric_input) {
+    std::set<std::size_t> momenta = independent_indices;
+    momenta.insert(loop_indices.begin(), loop_indices.end());
+    auto expression = [&](const Polynomial& polynomial) {
+      std::ostringstream out;
+      out << "(0";
+      for (const auto& [powers, coefficient] : polynomial.terms) {
+        char* raw = fmpq_get_str(nullptr, 10, coefficient.raw());
+        out << "+(" << raw << ")";
+        flint_free(raw);
+        std::vector<std::size_t> product;
+        for (std::size_t i = 0; i < powers.size(); ++i) {
+          if (momenta.contains(i)) {
+            for (int n = 0; n < powers[i]; ++n) product.push_back(i);
+          } else if (powers[i]) {
+            out << "*" << symbols.names[i] << "^" << powers[i];
+          }
+        }
+        if (!product.empty()) {
+          if (product.size() != 2)
+            throw std::runtime_error("research propagator is not quadratic in momenta");
+          out << "*ScalarProduct[" << symbols.names[product[0]] << ","
+              << symbols.names[product[1]] << "]";
+        }
+      }
+      out << ")";
+      return out.str();
+    };
+    std::ostringstream out;
+    auto names = [&](const auto& entries) {
+      out << "{";
+      for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (i) out << ",";
+        out << entries[i];
+      }
+      out << "}";
+    };
+    out << "<|\"LoopMomenta\"->"; names(loop_names);
+    out << ",\"ExternalMomenta\"->"; names(independent_names);
+    out << ",\"ExternalLegs\"->" << external_names.size();
+    out << ",\"Propagators\"->{";
+    for (std::size_t i = 0; i < integral_forms.size(); ++i) {
+      if (i) out << ",";
+      out << expression(integral_forms[i]);
+    }
+    out << "},\"Substitutions\"->{";
+    bool first = true;
+    for (const auto& [pair, solution] : scalar_solutions) {
+      if (!first) out << ",";
+      first = false;
+      out << "ScalarProduct[" << symbols.names[pair.first] << ","
+          << symbols.names[pair.second] << "]->" << expression(solution);
+    }
+    out << "}|>";
+    *research_parametric_input = out.str();
+  }
+
 
   std::set<std::string> excluded(loop_names.begin(), loop_names.end());
   excluded.insert(external_names.begin(), external_names.end());

@@ -134,20 +134,22 @@ void append_shifted_falling_atoms(TopLpCoefficientExpression& expression,
 TopLpTargetPlan compile_top_lp_target_plan(const Config& config)
 {
   TopLpTargetPlan result;
-  const bool has_projected_target =
-      std::ranges::any_of(config.targets, [](const Integral& target) {
-        return target.dimension_shift != 0 ||
-               std::ranges::any_of(target.indices, [](int index) { return index < 0; });
-      });
-  if (!has_projected_target) return result;
+  const auto needs_projection = [](const Integral& integral) {
+    return integral.dimension_shift != 0 ||
+           std::ranges::any_of(integral.indices, [](int index) { return index < 0; });
+  };
+  if (!std::ranges::any_of(config.basis, needs_projection) &&
+      !std::ranges::any_of(config.targets, needs_projection))
+    return result;
   result.projected = true;
   if (config.extended_lp.polynomial_terms.empty())
     throw std::invalid_argument("projected target has no extended LP polynomial");
 
   std::map<TopLpCoefficientExpression, std::uint32_t> expression_ids;
   SectorUtils sectors(config, config.propagator_slots);
+  result.basis_columns.reserve(config.basis.size());
   result.columns.reserve(config.targets.size());
-  for (const auto& target : config.targets) {
+  auto compile_integral = [&](const Integral& target) {
     integral_layout::validate(config, target);
     const std::int64_t half_dimension_shift = target.dimension_shift / 2;
     std::vector<unsigned> derivative_slots;
@@ -251,7 +253,11 @@ TopLpTargetPlan compile_top_lp_target_plan(const Config& config)
       result.maximum_g_shift = std::max(
           result.maximum_g_shift, static_cast<unsigned>(-column.back().powers.front()));
     }
-    result.columns.push_back(std::move(column));
-  }
+    return column;
+  };
+  for (const auto& master : config.basis)
+    result.basis_columns.push_back(compile_integral(master));
+  for (const auto& target : config.targets)
+    result.columns.push_back(compile_integral(target));
   return result;
 }

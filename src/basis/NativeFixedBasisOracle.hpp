@@ -31,7 +31,7 @@ struct NativeOracleEvaluation {
 };
 
 // Prepared finite-field reduction oracle for one target batch and one fixed
-// denominator-only physical basis.  The object owns Config because the native
+// physical basis. The object owns Config because the native
 // replay kernel keeps a reference to it.
 class NativeFixedBasisOracle {
 public:

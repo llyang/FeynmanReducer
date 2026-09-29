@@ -4,6 +4,7 @@
 #include "compiler/YamlCompiler.hpp"
 #include "masters/MasterFinder.hpp"
 #include "output/GenerateOutput.hpp"
+#include "output/ResearchIrOutput.hpp"
 #include "reduction/FeynmanReducer.hpp"
 #include "symmetry/Symmetry.hpp"
 
@@ -25,8 +26,15 @@ struct Options {
   std::filesystem::path basis_output;
   std::filesystem::path differential_equations_output;
   std::filesystem::path firefly_log_output;
+  std::optional<std::filesystem::path> research_ir_output;
   std::optional<unsigned> threads;
 };
+
+bool same_path(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+{
+  return std::filesystem::absolute(lhs).lexically_normal() ==
+         std::filesystem::absolute(rhs).lexically_normal();
+}
 
 unsigned parse_threads(const std::string& text)
 {
@@ -42,6 +50,7 @@ unsigned parse_threads(const std::string& text)
 Options parse_arguments(int argc, char** argv)
 {
   Options options;
+  std::optional<std::filesystem::path> research_ir_output;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
     auto value = [&]() -> std::string {
@@ -54,6 +63,10 @@ Options parse_arguments(int argc, char** argv)
       options.input = value();
     } else if (argument == "-j" || argument == "--threads") {
       options.threads = parse_threads(value());
+    } else if (argument == "--experimental-export-ir") {
+      research_ir_output = value();
+      if (research_ir_output->empty())
+        throw std::runtime_error(argument + " requires a non-empty path");
     } else if (argument == "-h" || argument == "--help") {
       std::cout << "Usage: FeynmanReducer [-i config.yaml] [-j N]\n";
       std::exit(0);
@@ -68,6 +81,17 @@ Options parse_arguments(int argc, char** argv)
   options.differential_equations_output =
       options.output_directory / "differential_equations.m";
   options.firefly_log_output = options.output_directory / "firefly.log";
+  if (research_ir_output) {
+    options.research_ir_output = parent / *research_ir_output;
+    for (const auto& reserved :
+         {options.input, options.mathematica_output, options.basis_output,
+          options.differential_equations_output, options.firefly_log_output}) {
+      if (same_path(*options.research_ir_output, reserved))
+        throw std::runtime_error(
+            "experimental research IR path conflicts with an existing input or "
+            "output path");
+    }
+  }
   return options;
 }
 
@@ -84,10 +108,17 @@ int main(int argc, char** argv)
     timing.set_info_output(run_log->detail());
     timing.summary("FeynmanReducer started");
     timing.summary(std::format("Reduction log: path={}", run_log->path().string()));
+    std::optional<ResearchIrMetadata> research_ir_metadata;
     Config config = timing.run_stage("Compile configuration", [&] {
-      Config compiled = compile_yaml_config(options.input);
+      std::string parametric_input;
+      Config compiled = compile_yaml_config(options.input,
+          options.research_ir_output ? &parametric_input : nullptr);
       if (options.threads.has_value()) {
         compiled.threads = *options.threads;
+      }
+      if (options.research_ir_output) {
+        research_ir_metadata = make_research_ir_metadata(compiled);
+        research_ir_metadata->parametric_input = std::move(parametric_input);
       }
       return compiled;
     });
@@ -158,6 +189,10 @@ int main(int argc, char** argv)
                                                  options.differential_equations_output);
       }
       write_basis_integrals(result.basis, result.integral_header, options.basis_output);
+      if (options.research_ir_output) {
+        write_mathematica_research_ir(*research_ir_metadata, result,
+                                      *options.research_ir_output);
+      }
     });
     timing.summary(std::format("Output: type=mathematica, path={}",
                                options.mathematica_output.string()));
@@ -166,6 +201,10 @@ int main(int argc, char** argv)
     if (!result.differential_parameters.empty()) {
       timing.summary(std::format("Output: type=differential_equations, path={}",
                                  options.differential_equations_output.string()));
+    }
+    if (options.research_ir_output) {
+      timing.summary(std::format("Output: type=experimental_research_ir, path={}",
+                                 options.research_ir_output->string()));
     }
     if (archived_firefly_log) {
       timing.summary(std::format("Output: type=firefly_log, path={}",

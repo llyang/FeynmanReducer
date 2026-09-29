@@ -74,6 +74,12 @@ enum class SymmetryBackend {
 enum class BasisSelectionPolicy {
   Default,
   DSeparating,
+  Preferred,
+};
+
+struct PreferredMaster {
+  Integral integral;
+  std::optional<std::uint32_t> host_sector;
 };
 
 using VariablePermutation = std::vector<std::uint32_t>;
@@ -149,6 +155,7 @@ struct MasterFinderConfig : TopologyConfig {
 
 struct Config : MasterFinderConfig {
   std::vector<Integral> basis;
+  std::vector<PreferredMaster> preferred_masters;
   // Unique physical integrals used as kernel right-hand sides.
   std::vector<Integral> targets;
   // Empty means the legacy one-output-per-target interface. It is populated

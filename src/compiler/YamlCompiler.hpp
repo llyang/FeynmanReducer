@@ -18,7 +18,8 @@ compile_yaml_master_finder_config(const std::filesystem::path& filepath);
 // Compiles a reduction configuration and its optional targets. A DE-only
 // configuration remains target-free until the application has selected the
 // master basis and materializes its derivative sources.
-[[nodiscard]] Config compile_yaml_config(const std::filesystem::path& filepath);
+[[nodiscard]] Config compile_yaml_config(const std::filesystem::path& filepath,
+                    std::string* research_parametric_input = nullptr);
 
 [[nodiscard]] std::map<std::string, ExactRationalConstant>
 compile_yaml_numerics(const std::filesystem::path& filepath);

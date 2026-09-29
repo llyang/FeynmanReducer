@@ -58,14 +58,22 @@ derivative_terms(Config& config, const Integral& master, std::size_t parameter,
                  const mpq_class& inverse_polynomial_scale)
 {
   integral_layout::validate(config, master);
-  if (master.dimension_shift != 0 ||
-      std::ranges::any_of(master.indices, [](int index) { return index < 0; })) {
+  if (master.dimension_shift != 0) {
     throw std::invalid_argument(
-        "differential equations require a nonnegative d-dimensional master basis");
+        "differential equations require a d-dimensional master basis");
   }
+  // A negative index is a boundary derivative in the extended LP variables.
+  // Its kinematic derivative must also differentiate the ISP-dependent terms
+  // of the extended polynomial; the rising factors enforce the boundary jet.
+  const bool has_numerator = std::ranges::any_of(
+      master.indices, [](int index) { return index < 0; });
+  const auto& terms = has_numerator ? config.extended_lp.polynomial_terms
+                                    : config.polynomial_terms;
+  const std::size_t variable_count =
+      has_numerator ? config.integral_count : config.propagator_count;
   std::map<std::uint32_t, mpq_class> combined;
-  for (const auto& polynomial_term : config.polynomial_terms) {
-    if (polynomial_term.powers.size() != config.propagator_count ||
+  for (const auto& polynomial_term : terms) {
+    if (polynomial_term.powers.size() != variable_count ||
         polynomial_term.weights.size() != config.kinematic_parameters.size() + 1) {
       throw std::logic_error("compiled LP polynomial metadata is inconsistent");
     }
@@ -77,17 +85,22 @@ derivative_terms(Config& config, const Integral& master, std::size_t parameter,
     mpz_class rising = 1;
     for (std::size_t variable = 0; variable < polynomial_term.powers.size();
          ++variable) {
-      const std::size_t slot = config.propagator_slots.at(variable);
+      const std::size_t slot = has_numerator
+                                   ? variable
+                                   : config.propagator_slots.at(variable);
       const int index = master.indices.at(slot);
       const unsigned power = polynomial_term.powers[variable];
       for (unsigned step = 0; step < power; ++step)
         rising *= static_cast<long>(index) + static_cast<long>(step);
       if (rising == 0) break;
-      if (power > static_cast<unsigned>(std::numeric_limits<int>::max() -
-                                        shifted.indices.at(slot))) {
+      if (power > static_cast<unsigned>(std::numeric_limits<int>::max()))
+        throw std::overflow_error("differential-equation target power exceeds int");
+      int next_index = 0;
+      if (__builtin_add_overflow(shifted.indices.at(slot),
+                                 static_cast<int>(power), &next_index)) {
         throw std::overflow_error("differential-equation target index exceeds int");
       }
-      shifted.indices[slot] += static_cast<int>(power);
+      shifted.indices[slot] = next_index;
     }
     if (rising == 0) continue;
 

@@ -5,8 +5,7 @@ FeynmanReducer reduces Feynman integrals from a YAML topology definition. It fin
 ## Requirements
 
 - CMake 3.20 or newer
-- GCC, Clang, or Apple Clang targeting a 64-bit platform with GNU C++20 and
-  `unsigned __int128` support
+- GCC, Clang, or Apple Clang targeting a 64-bit platform with GNU C++20 and `unsigned __int128` support
 - A POSIX/Unix-like system with pthreads
 - yaml-cpp
 - zlib (gzip reference inputs for `reduction_validate`)
@@ -62,7 +61,7 @@ FeynmanReducer [-i config.yaml] [-j N]
 
 Relative paths in a configuration are resolved against the directory containing that YAML file. Use the files under `examples/` as configuration templates.
 
-`targets_file` accepts either a single file name or a list of file names. Each file can be a plain-text file (`.txt`) or a YAML file (`.yaml` or `.yml`). The plain-text files contain one headed integral per entry, such as `F[2,1]`. Every integral head, including a component in a combination YAML file, must equal the configured `integral_header`; a mismatched head is rejected instead of being silently rewritten. The YAML files are designed to represent targets that are linear combinations of integrals:
+`targets_file` accepts either a single file name or a list of file names. Each file can be a plain-text file (`.txt`) or a YAML file (`.yaml` or `.yml`). The plain-text files contain one headed integral per entry, such as `F[2,1]`. In list form, repeated ordinary integral outputs are emitted once at their first occurrence; this permits role-specific target lists to overlap without requesting duplicate output rules. Every integral head, including a component in a combination YAML file, must equal the configured `integral_header`; a mismatched head is rejected instead of being silently rewritten. The YAML files are designed to represent targets that are linear combinations of integrals:
 
 ```yaml
 combinations:
@@ -83,42 +82,25 @@ F[-4,{2,1}]
 
 `F[k,{a1,a2,...}]` denotes the integral in dimension `d+k`. Positive, zero, and negative even `k` are accepted; odd shifts are rejected. The legacy `F[a1,a2,...]` syntax is unchanged, and `k=0` is written back in that legacy form. In combination YAML, shifted integrals use the same syntax as a quoted scalar, for example `integral: "F[2,{1,1}]"`. Master integrals remain in dimension `d`. Both default and `d-separating` reduction support shifted targets, including targets with numerator/ISP indices.
 
-Master indices must currently be nonnegative. Negative-index targets are supported through projected top-LP reduction, but choosing a negative-index master will require future extended-LP basis coordinates, replay/reconstruction support, and an extended differential-equation path. Dimension-shifted masters are also unsupported.
+Negative-index masters and targets are supported through projected top-LP reduction, including replay, reconstruction, and differential equations for masters in dimension `d`. Dimension-shifted masters remain unsupported.
 
 `reduction_validate` does not yet have a cross-dimension Kira comparison model and explicitly rejects configurations containing dimension-shifted targets.
 
-Master-integral differential equations can be generated directly from the
-Lee--Pomeransky polynomial by adding:
+Master-integral differential equations can be generated directly from the Lee--Pomeransky polynomial by adding:
 
 ```yaml
 differential_equations: true
 ```
 
-The program differentiates with respect to every free kinematic parameter
-(but not `d`), converts each derivative to a linear combination of `d+2`
-integrals, and reduces those combinations to the final `d`-dimensional master
-basis. Parameters fixed by `numerics` are not differentiated. If all
-kinematic parameters are fixed, the configuration is rejected.
+The program differentiates with respect to every free kinematic parameter (but not `d`), converts each derivative to a linear combination of `d+2` integrals, and reduces those combinations to the final `d`-dimensional master basis. Parameters fixed by `numerics` are not differentiated. If all kinematic parameters are fixed, the configuration is rejected.
 
-`targets_file` remains optional for this mode. When it is present, ordinary
-reductions and differential equations share one kernel. When it is absent,
-the run is DE-only and does not implicitly read `targets.txt`. Both `default`
-and `d-separating` basis selection are supported. D-separating discovery always
-uses all symmetry-inequivalent top-sector integrals with both dots on one
-propagator, i.e. exactly one index equal to three; user targets do not participate
-in the search. After selection, only ordinary and shifted integrals explicitly
-requested as outputs are checked against that fixed basis. Combination-only and
-derivative source integrals remain native RHS terms and are not validated as
-standalone targets. A failure terminates the run without another search. D-separating constrains the explicit integral outputs, not the
-contracted entries of the resulting connection matrices.
+`targets_file` remains optional for this mode. When it is present, ordinary reductions and differential equations share one kernel. When it is absent, the run is DE-only and does not implicitly read `targets.txt`. Both `default` and `d-separating` basis selection are supported. D-separating discovery always uses all symmetry-inequivalent top-sector integrals with both dots on one propagator, i.e. exactly one index equal to three; user targets do not participate in the search. After selection, only ordinary and shifted integrals explicitly requested as outputs are checked against that fixed basis. Combination-only and derivative source integrals remain native RHS terms and are not validated as standalone targets. A failure terminates the run without another search. D-separating constrains the explicit integral outputs, not the contracted entries of the resulting connection matrices.
 
 Three focused examples under `examples/` exercise these interfaces directly:
 
 - `linear_combination/` reads the 22 original targets from `targets.txt`, then two mixed-mass-dimension named combinations from `targets.yaml`; this also demonstrates mixed text/YAML target files and stable file-order output.
 - `dimension_shift/` combines the 22 original targets and eight representative dotted/ISP targets in dimensions `d+2` and `d-2` in one `targets.txt`.
-- `differential_equations/` uses the outer-massive double box to reduce the 22
-  original targets and generate the `msq`, `s`, and `t` connection matrices in
-  the same run.
+- `differential_equations/` uses the outer-massive double box to reduce the 22 original targets and generate the `msq`, `s`, and `t` connection matrices in the same run.
 
 The bundled examples select the nauty backend. With a bliss-only build, change `symmetry_backend` in the selected YAML file to `bliss`.
 
@@ -134,11 +116,6 @@ outputs/firefly.log                 # only when FireFly emits a raw log
 
 Coefficients retain polynomial factors and powers. After reconstruction, explicit integral outputs with mixed D/kinematic denominator factors produce a warning with default basis selection and an error with explicit `d-separating`; named combinations and differential-equation entries are excluded. With explicit `d-separating`, combination/DE-only runs report the successful basis-search certificate without separate component validation. With default selection and no explicit integral outputs, this diagnostic is skipped. The check is also skipped when D is fixed.
 
-`differential_equations.m` is a Mathematica replacement list from each free
-kinematic parameter to its connection matrix, for example
-`{s -> {{...}}, t -> {{...}}}`. Matrix rows and columns both follow
-`final_basis.txt`. In a DE-only run `results.m` is the empty replacement list.
-`reduction_validate` does not yet validate differential matrices and rejects
-such configurations explicitly.
+`differential_equations.m` is a Mathematica replacement list from each free kinematic parameter to its connection matrix, for example `{s -> {{...}}, t -> {{...}}}`. Matrix rows and columns both follow `final_basis.txt`. In a DE-only run `results.m` is the empty replacement list. `reduction_validate` does not yet validate differential matrices and rejects such configurations explicitly.
 
 `build/reduction_validate -i examples/double_box_outer_massive/config.yaml` compares the output with static Kira references. The default reference is `validation/kira_integrals.m`, falling back to `.m.gz` when plain text is absent. Gzip input is decompressed in memory by zlib.

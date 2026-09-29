@@ -3,6 +3,7 @@
 #include "reduction/detail/ReductionStage.hpp"
 
 #include "basis/DSeparatingReduction.hpp"
+#include "basis/PreferredBasis.hpp"
 #include "core/IntegralFormatting.hpp"
 #include "masters/detail/GlobalBasisSelector.hpp"
 #include "reduction/BlackBoxFeynman.hpp"
@@ -252,6 +253,19 @@ ReductionResult perform_reduction_impl(Config& config,
                                        ReductionProgressCallback progress,
                                        ReductionOptions options)
 {
+  if (config.basis_selection == BasisSelectionPolicy::Preferred) {
+    if (candidates != nullptr) {
+      if (!candidates->requires_global_selection())
+        throw std::invalid_argument(
+            "preferred selection requires a global-selection candidate set");
+      config.basis = masters::detail::select_global_master_basis(
+          config, candidates->integrals, candidates->relation_source_sectors);
+      candidates = nullptr;
+    }
+    config.basis = run_reduction_stage(progress, "Complete preferred master basis", [&] {
+      return basis::complete_preferred_basis(config, progress);
+    });
+  }
   if (config.basis_selection == BasisSelectionPolicy::DSeparating) {
     if (options.d_separating_kernel == DSeparatingKernelStrategy::Auto) {
       options.d_separating_kernel =

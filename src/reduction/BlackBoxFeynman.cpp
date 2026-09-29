@@ -147,23 +147,26 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
                                  const reduction::detail::RecompactSource* source)
     : cfg(config), replay_orientation_preference(options.replay_orientation),
       ansatz_dot_ordering(options.ansatz_dot_ordering),
-      check_master_independence(config.check_master_independence &&
-                                !options.master_basis_globally_selected)
+      check_master_independence(
+          std::ranges::any_of(config.basis, [](const Integral& master) {
+            return std::ranges::any_of(master.indices,
+                                       [](int index) { return index < 0; });
+          }) ||
+          (config.check_master_independence &&
+           !options.master_basis_globally_selected))
 {
   for (const auto& master : cfg.basis) {
     if (master.dimension_shift != 0) {
       throw std::invalid_argument(
           "dimension-shifted integrals are not supported in the master basis");
     }
-    if (std::ranges::any_of(master.indices, [](int index) { return index < 0; })) {
-      throw std::invalid_argument(
-          "negative indices are not supported in the master basis");
-    }
   }
-  const bool has_negative_targets =
-      std::ranges::any_of(cfg.targets, [](const auto& target) {
-        return std::ranges::any_of(target.indices, [](int index) { return index < 0; });
-      });
+  const auto has_negative_index = [](const auto& integrals) {
+    return std::ranges::any_of(integrals, [](const auto& integral) {
+      return std::ranges::any_of(integral.indices,
+                                 [](int index) { return index < 0; });
+    });
+  };
   if (source) {
     top_lp_target_plan.expressions = source->expressions;
     top_lp_target_plan.maximum_g_shift = source->maximum_g_shift;
@@ -213,12 +216,14 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
   kernel_statistics_.top_lp_target_expressions = top_lp_expression_programs.size();
   base_top_lp_expression_count = top_lp_expression_programs.size();
   std::vector<TopLpCoefficientExpression>().swap(top_lp_target_plan.expressions);
-  for (const auto& target : cfg.targets) {
-    for (const int index : target.indices) {
-      if (index < 0) {
-        kernel_statistics_.maximum_delta_derivative =
-            std::max(kernel_statistics_.maximum_delta_derivative,
-                     static_cast<std::size_t>(-static_cast<std::int64_t>(index)));
+  for (const auto* integrals : {&cfg.basis, &cfg.targets}) {
+    for (const auto& integral : *integrals) {
+      for (const int index : integral.indices) {
+        if (index < 0) {
+          kernel_statistics_.maximum_delta_derivative =
+              std::max(kernel_statistics_.maximum_delta_derivative,
+                       static_cast<std::size_t>(-static_cast<std::int64_t>(index)));
+        }
       }
     }
   }
@@ -229,7 +234,8 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
         "parameter coefficient basis size {} exceeds the supported limit {}",
         2 * coefficient_parameters, MAX_BILINEAR_BASIS));
   }
-  const bool uses_extended_lp = has_negative_targets;
+  const bool uses_extended_lp =
+      has_negative_index(cfg.targets) || has_negative_index(cfg.basis);
   lp_variable_count = uses_extended_lp ? cfg.integral_count : cfg.propagator_count;
   kernel_statistics_.lp_variable_count = lp_variable_count;
   auto compile_lp_programs = [&](const auto& integrals) {
@@ -251,8 +257,11 @@ BlackBoxFeynman::BlackBoxFeynman(const Config& config, ReductionOptions options,
           throw std::overflow_error("integral index sum exceeds int64");
         }
       }
-      program.delta =
-          program.index_sum - static_cast<std::int64_t>(active_integral.indices.size());
+      if (__builtin_sub_overflow(
+              program.index_sum,
+              static_cast<std::int64_t>(active_integral.indices.size()),
+              &program.delta))
+        throw std::overflow_error("integral LP delta exceeds int64");
       for (const int index : active_integral.indices) {
         if (index > 1) {
           for (std::int64_t factor = 1; factor < index; ++factor)

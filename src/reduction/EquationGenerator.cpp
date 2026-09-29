@@ -58,6 +58,16 @@ EquationGenerator::EquationGenerator(const Config& config,
 
 std::vector<std::vector<Monomial>> EquationGenerator::build_basis_columns() const
 {
+  if (target_plan != nullptr && target_plan->projected) {
+    if (target_plan->basis_columns.size() == cfg.basis.size())
+      return target_plan->basis_columns;
+    if (!target_plan->basis_columns.empty() ||
+        std::ranges::any_of(cfg.basis, [](const Integral& master) {
+          return std::ranges::any_of(master.indices,
+                                     [](int index) { return index < 0; });
+        }))
+      throw std::logic_error("projected basis columns are incomplete");
+  }
   return build_integral_columns(cfg.basis);
 }
 
@@ -79,24 +89,30 @@ std::vector<AnsatzSeedLayer> EquationGenerator::build_ansatz_seed_layers(
     layers[g_shift].g_shift = g_shift;
   }
 
-  append_integral_anchors(layers.front().anchors, cfg.basis);
   append_integral_anchors(layers.front().anchors, additional_anchors);
   if (target_plan == nullptr || !target_plan->projected) {
+    append_integral_anchors(layers.front().anchors, cfg.basis);
     append_integral_anchors(layers.front().anchors, cfg.targets);
     return layers;
   }
 
-  for (const auto& column : target_plan->columns) {
-    for (const auto& term : column) {
-      if (term.powers.empty() || term.powers.front() > 0)
-        throw std::logic_error("top-LP target has an invalid G-shift");
-      const auto row_g_shift = static_cast<unsigned>(-term.powers.front());
-      for (auto& layer : layers) {
-        if (row_g_shift != layer.g_shift && row_g_shift != layer.g_shift + 1) continue;
-        layer.anchors.emplace_back(term.powers.begin() + 1, term.powers.end());
+  const auto append_projected_anchors = [&](const auto& columns) {
+    for (const auto& column : columns) {
+      for (const auto& term : column) {
+        if (term.powers.empty() || term.powers.front() > 0)
+          throw std::logic_error("top-LP integral has an invalid G-shift");
+        const auto row_g_shift = static_cast<unsigned>(-term.powers.front());
+        for (auto& layer : layers) {
+          if (row_g_shift != layer.g_shift && row_g_shift != layer.g_shift + 1) continue;
+          layer.anchors.emplace_back(term.powers.begin() + 1, term.powers.end());
+        }
       }
     }
-  }
+  };
+  if (target_plan->basis_columns.empty() && !cfg.basis.empty())
+    append_integral_anchors(layers.front().anchors, cfg.basis);
+  append_projected_anchors(target_plan->basis_columns);
+  append_projected_anchors(target_plan->columns);
   return layers;
 }
 

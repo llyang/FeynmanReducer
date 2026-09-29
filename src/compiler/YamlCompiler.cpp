@@ -29,7 +29,7 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
   if (!root.IsMap()) {
     throw std::runtime_error("top-level YAML value must be a mapping");
   }
-  static constexpr std::array<std::string_view, 15> allowed_fields{
+  static constexpr std::array<std::string_view, 16> allowed_fields{
       "reconstruction_scale",
       "kinematics",
       "propagators",
@@ -42,6 +42,7 @@ YAML::Node load_yaml_root(const std::filesystem::path& filepath)
       "factor_scan",
       "shift_scan",
       "basis_selection",
+      "preferred_masters",
       "numerics",
       "check_master_independence",
       "differential_equations"};
@@ -129,7 +130,7 @@ void append_integral_requests(
                                          config.integral_header)) {
     validate_target(config, integral);
     if (!integral_outputs.insert({integral.dimension_shift, integral.indices}).second)
-      throw std::runtime_error("duplicate target integral across target files");
+      continue;
     const auto target = intern_target(config, integral);
     ReductionRequest request;
     request.output.integral = integral;
@@ -203,6 +204,56 @@ void compile_targets(const YAML::Node& root, const std::filesystem::path& parent
     throw std::runtime_error("target files contain no reduction requests");
 }
 
+void compile_preferred_masters(const std::filesystem::path& path, Config& config)
+{
+  std::ifstream input(path);
+  if (!input)
+    throw std::runtime_error("cannot open preferred masters file: " + path.string());
+  std::set<std::vector<int>> seen;
+  std::string line;
+  std::size_t line_number = 0;
+  while (std::getline(input, line)) {
+    ++line_number;
+    const auto hash = line.find('#');
+    const std::string_view expression(line.data(),
+                                      hash == std::string::npos ? line.size() : hash);
+    if (std::ranges::all_of(expression, [](unsigned char value) {
+          return std::isspace(value) != 0;
+        }))
+      continue;
+    try {
+      PreferredMaster preferred;
+      preferred.integral = compiler::detail::parse_integral_expression(
+          expression, config.integral_count, config.integral_header);
+      integral_layout::validate(config, preferred.integral);
+      if (preferred.integral.dimension_shift != 0)
+        throw std::runtime_error("preferred master must be d-dimensional");
+      if (hash != std::string::npos) {
+        const std::string comment = line.substr(hash + 1);
+        std::smatch match;
+        static const std::regex host_pattern(R"(^\s*sector\s*=\s*([0-9]+)\s*$)");
+        if (std::regex_match(comment, match, host_pattern)) {
+          const auto value = std::stoull(match[1].str());
+          if (value > std::numeric_limits<std::uint32_t>::max())
+            throw std::runtime_error("preferred host sector exceeds uint32");
+          preferred.host_sector = static_cast<std::uint32_t>(value);
+        } else if (comment.find("sector") != std::string::npos) {
+          throw std::runtime_error("invalid preferred host sector annotation");
+        }
+      }
+      if (!seen.insert(preferred.integral.indices).second)
+        throw std::runtime_error("duplicate preferred master");
+      config.preferred_masters.push_back(std::move(preferred));
+    } catch (const std::exception& error) {
+      throw std::runtime_error(path.string() + ":" + std::to_string(line_number) +
+                               ": " + error.what());
+    }
+  }
+  if (config.preferred_masters.empty())
+    throw std::runtime_error("preferred masters file contains no integrals: " +
+                             path.string());
+}
+
 } // namespace
 
 TopologyConfig compile_yaml_topology(const std::filesystem::path& filepath)
@@ -221,12 +272,13 @@ compile_yaml_master_finder_config(const std::filesystem::path& filepath)
   return config;
 }
 
-Config compile_yaml_config(const std::filesystem::path& filepath)
+Config compile_yaml_config(const std::filesystem::path& filepath,
+                           std::string* research_parametric_input)
 {
   const YAML::Node root = load_yaml_root(filepath);
   Config config;
   static_cast<TopologyConfig&>(config) =
-      compiler::detail::compile_yaml_topology_node(root);
+      compiler::detail::compile_yaml_topology_node(root, research_parametric_input);
   if (root["differential_equations"])
     config.differential_equations = root["differential_equations"].as<bool>();
   if (config.differential_equations && config.kinematic_parameters.empty()) {
@@ -242,9 +294,22 @@ Config compile_yaml_config(const std::filesystem::path& filepath)
       config.basis_selection = BasisSelectionPolicy::Default;
     } else if (selection == "d-separating") {
       config.basis_selection = BasisSelectionPolicy::DSeparating;
+    } else if (selection == "preferred") {
+      config.basis_selection = BasisSelectionPolicy::Preferred;
     } else {
-      throw std::runtime_error("basis_selection must be 'default' or 'd-separating'");
+      throw std::runtime_error(
+          "basis_selection must be 'default', 'd-separating', or 'preferred'");
     }
+  }
+  if (config.basis_selection == BasisSelectionPolicy::Preferred) {
+    if (!root["preferred_masters"] || !root["preferred_masters"].IsScalar())
+      throw std::runtime_error("preferred selection requires preferred_masters path");
+    const std::string filename = root["preferred_masters"].as<std::string>();
+    if (filename.empty())
+      throw std::runtime_error("preferred_masters path must be non-empty");
+    compile_preferred_masters(parent / filename, config);
+  } else if (root["preferred_masters"]) {
+    throw std::runtime_error("preferred_masters requires basis_selection: preferred");
   }
   if (root["check_master_independence"])
     config.check_master_independence = root["check_master_independence"].as<bool>();

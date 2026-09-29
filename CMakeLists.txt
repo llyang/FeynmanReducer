@@ -269,6 +269,7 @@ add_library(feynman_reducer_reduction STATIC
   src/basis/DSeparatingReduction.cpp
   src/basis/FiniteField.cpp
   src/basis/NativeFixedBasisOracle.cpp
+  src/basis/PreferredBasis.cpp
   src/basis/UnivariateSeparation.cpp
   src/basis/FactorSaturation.cpp
   src/reduction/BlackBoxFeynman.cpp
@@ -329,6 +330,7 @@ target_link_libraries(feynman_reducer_masters
 
 add_library(feynman_reducer_output STATIC
   src/output/GenerateOutput.cpp
+  src/output/ResearchIrOutput.cpp
 )
 target_include_directories(feynman_reducer_output PUBLIC src)
 target_link_libraries(feynman_reducer_output

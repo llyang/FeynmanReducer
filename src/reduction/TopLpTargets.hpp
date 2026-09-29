@@ -22,13 +22,15 @@ struct TopLpCoefficientExpression {
 };
 
 struct TopLpTargetPlan {
-  // Top-LP columns are aligned with Config::targets and used as RHS columns.
+  // Projected columns share one coefficient-expression registry. Basis columns
+  // enter the matrix; target columns enter the right-hand side.
+  std::vector<std::vector<Monomial>> basis_columns;
   std::vector<std::vector<Monomial>> columns;
   std::vector<TopLpCoefficientExpression> expressions;
   unsigned maximum_g_shift = 0;
   bool projected = false;
 };
 
-/// Compiles exact boundary projections for negative-index and dimension-shifted
-/// targets.
+/// Compiles exact boundary projections for the basis and targets whenever any
+/// integral needs the extended LP representation.
 [[nodiscard]] TopLpTargetPlan compile_top_lp_target_plan(const Config& config);

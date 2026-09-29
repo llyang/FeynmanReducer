@@ -81,6 +81,11 @@ void BlackBoxFeynman::plan_kernel(
   auto check_basis_representatives = [&](std::span<const Integral> basis) {
     std::unordered_set<std::vector<int>, VectorHash> representatives;
     for (const auto& integral : basis) {
+      // An ISP numerator disappears from the compact raw power vector. The
+      // projected columns and the master-rank audit handle those masters.
+      if (std::ranges::any_of(integral.indices,
+                              [](int index) { return index < 0; }))
+        continue;
       std::vector<int> powers(variable_slots.size() + 1, 0);
       for (std::size_t variable = 0; variable < variable_slots.size(); ++variable)
         powers[variable + 1] = integral.indices[variable_slots[variable]] - 1;
